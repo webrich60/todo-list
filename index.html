@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TODO管理 - リマインダー＆カレンダー強化版</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideInRight { from { transform: translateX(2rem); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes bouncePulse { 
+      0%, 100% { transform: scale(1); } 
+      50% { transform: scale(1.02); } 
+    }
+    .animate-in { animation-duration: 400ms; animation-fill-mode: both; }
+    .fade-in { animation-name: fadeIn; }
+    .slide-in-from-right-8 { animation-name: slideInRight; }
+    .animate-bounce-pulse { animation: bouncePulse 2s infinite; }
+    body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; background-color: #f7f5f0; color: #334155; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    input[type="datetime-local"] { -webkit-appearance: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const App = () => {
+      const [currentTime, setCurrentTime] = useState(new Date());
+      // view: input(追加), list(TODO), memo(メモ), history(完了済), edit(編集), settings(設定)
+      const [currentView, setCurrentView] = useState('input'); 
+      const [filter, setFilter] = useState('all');
+      
+      const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('gas_url') || '');
+
+      const [todos, setTodos] = useState(() => {
+        const saved = localStorage.getItem('todos');
+        return saved ? JSON.parse(saved) : [];
+      });
+
+      // フォーム用のステート
+      const [editingTodo, setEditingTodo] = useState(null);
+      const [newType, setNewType] = useState('todo'); // 'todo' または 'memo'
+      const [newTitle, setNewTitle] = useState('');
+      const [newDescription, setNewDescription] = useState(''); 
+      const [newDueDate, setNewDueDate] = useState('');
+      const [newEndDate, setNewEndDate] = useState('');
+      const [newImage, setNewImage] = useState(null);
+      const [newColor, setNewColor] = useState('blue');
+      const [newPriority, setNewPriority] = useState('中');
+      const [newMailNotify, setNewMailNotify] = useState(false); // メール通知フラグ追加
+
+      // 自動保存
+      useEffect(() => {
+        localStorage.setItem('todos', JSON.stringify(todos));
+        if (!gasUrl) return;
+        const timeoutId = setTimeout(() => {
+          exportToSpreadsheet(true);
+        }, 1500);
+        return () => clearTimeout(timeoutId);
+      }, [todos, gasUrl]);
+
+      // 1分ごとに現在時刻を更新（期限切れ判定用）
+      useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date()), 60000);
+        return () => clearInterval(timer);
+      }, []);
+
+      const saveGasUrl = (url) => {
+        setGasUrl(url.trim());
+        localStorage.setItem('gas_url', url.trim());
+        alert('連携URLを保存しました。メール通知機能を利用するにはGAS側の設定が必要です。');
+        setCurrentView('input');
+      };
+
+      const handleImageChange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onloadend = () => { setNewImage(reader.result); };
+          reader.readAsDataURL(file);
+        }
+      };
+
+      const resetForm = () => {
+        setNewType('todo'); setNewTitle(''); setNewDescription(''); setNewDueDate(''); setNewEndDate(''); 
+        setNewImage(null); setNewColor('blue'); setNewPriority('中'); setNewMailNotify(false); setEditingTodo(null);
+      };
+
+      // タスクの追加
+      const addTodo = (e) => {
+        e.preventDefault();
+        if (!newTitle.trim()) return;
+        const newTodo = { 
+          id: Date.now(), 
+          type: newType, 
+          title: newTitle.trim(), 
+          description: newDescription.trim(),
+          dueDate: newDueDate || null, 
+          endDate: newEndDate || null,
+          color: newColor, 
+          priority: newPriority,
+          mailNotify: newMailNotify, // 通知希望フラグ
+          completed: false, 
+          imageUrl: newImage 
+        };
+        setTodos([...todos, newTodo]);
+        resetForm();
+      };
+
+      // タスクの修正（更新）
+      const updateTodo = (e) => {
+        e.preventDefault();
+        if (!newTitle.trim() || !editingTodo) return;
+        
+        const updatedTodo = {
+          ...editingTodo,
+          type: newType,
+          title: newTitle.trim(),
+          description: newDescription.trim(),
+          dueDate: newDueDate || null,
+          endDate: newEndDate || null,
+          color: newColor,
+          priority: newPriority,
+          mailNotify: newMailNotify,
+          imageUrl: newImage
+        };
+        
+        setTodos(todos.map(t => t.id === editingTodo.id ? updatedTodo : t));
+        const viewToReturn = updatedTodo.completed ? 'history' : (updatedTodo.type === 'memo' ? 'memo' : 'list');
+        resetForm();
+        setCurrentView(viewToReturn);
+      };
+
+      // 編集画面を開く
+      const startEdit = (todo) => {
+        setEditingTodo(todo);
+        setNewType(todo.type || 'todo');
+        setNewTitle(todo.title);
+        setNewDescription(todo.description || '');
+        setNewDueDate(todo.dueDate || '');
+        setNewEndDate(todo.endDate || '');
+        setNewColor(todo.color || 'blue');
+        setNewPriority(todo.priority || '中');
+        setNewMailNotify(todo.mailNotify || false);
+        setNewImage(todo.imageUrl || null);
+        setCurrentView('edit');
+      };
+
+      const deleteTodo = (id) => {
+        if (window.confirm('完全に削除してもよろしいですか？')) {
+          setTodos(todos.filter(todo => todo.id !== id));
+        }
+      };
+
+      const toggleComplete = (id) => {
+        setTodos(todos.map(todo => todo.id === id ? { ...todo, completed: !todo.completed } : todo));
+      };
+
+      // GASへのエクスポート (メール通知フラグも含めて送信)
+      const exportToSpreadsheet = async (isAuto = false) => {
+        if (!gasUrl) return;
+        try {
+          const exportData = todos.map(t => ({ 
+            id: t.id, 
+            type: t.type || 'todo', 
+            title: t.title, 
+            description: t.description || '', 
+            priority: t.priority || '中',
+            dueDate: t.dueDate || '期限なし', 
+            endDate: t.endDate || '', 
+            color: t.color || 'blue',
+            mailNotify: t.mailNotify ? '希望する' : '希望しない',
+            completed: t.completed ? '完了' : '未完了' 
+          }));
+          await fetch(gasUrl, { 
+            method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exportData) 
+          });
+        } catch (error) {
+          console.error('Export Error:', error);
+        }
+      };
+
+      const getGoogleCalendarUrl = (todo) => {
+        const prefix = todo.type === 'memo' ? '📝メモ' : 'TODO';
+        const text = encodeURIComponent(`【${todo.priority || '中'}】${prefix}: ${todo.title}`);
+        const details = encodeURIComponent(todo.description || '');
+        let dates = '';
+        if (todo.dueDate) {
+          const startDate = new Date(todo.dueDate);
+          const endDate = todo.endDate ? new Date(todo.endDate) : new Date(startDate.getTime() + 60 * 60 * 1000); 
+          const format = (date) => date.toISOString().replace(/-|:|\.\d\d\d/g, '');
+          dates = `&dates=${format(startDate)}/${format(endDate)}`;
+        }
+        return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&details=${details}${dates}`;
+      };
+
+      // 分類とソート
+      const activeTodos = todos.filter(todo => !todo.completed && (todo.type === 'todo' || !todo.type));
+      const activeMemos = todos.filter(todo => !todo.completed && todo.type === 'memo');
+      const completedTodos = todos.filter(todo => todo.completed).sort((a, b) => b.id - a.id);
+
+      // 期限切れタスクの抽出
+      const expiredTodos = activeTodos.filter(todo => todo.dueDate && new Date(todo.dueDate) < currentTime);
+
+      const sortFunction = (a, b) => {
+        const pOrder = { '高': 1, '中': 2, '低': 3 };
+        const pA = pOrder[a.priority] || 2;
+        const pB = pOrder[b.priority] || 2;
+        if (pA !== pB) return pA - pB;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return new Date(a.dueDate) - new Date(b.dueDate);
+      };
+
+      const getAlertBadge = (dueDate) => {
+        if (!dueDate) return null;
+        const due = new Date(dueDate);
+        const diffHours = (due - currentTime) / (1000 * 60 * 60);
+        
+        if (diffHours < 0) return { label: '⚠️ 期限切れ！', classes: 'bg-red-600 text-white border-red-700 font-black animate-pulse shadow-lg' };
+        if (diffHours <= 3) return { label: '🔥 あと3時間以内！', classes: 'bg-red-500 text-white border-red-600 animate-pulse shadow-md' };
+        if (diffHours <= 48) return { label: '🚨 あと2日以内', classes: 'bg-orange-500 text-white border-orange-600 shadow-sm' };
+        if (diffHours <= 168) return { label: '🔔 あと1週間以内', classes: 'bg-orange-100 text-orange-800 border-orange-300 font-bold' };
+        return null;
+      };
+
+      // タスク/メモカードコンポーネント
+      const TodoItem = ({ todo }) => {
+        const isExpired = !todo.completed && todo.dueDate && new Date(todo.dueDate) < currentTime;
+        const alertBadge = !todo.completed ? getAlertBadge(todo.dueDate) : null;
+        
+        let borderColorClass = 'border-gray-100';
+        let iconColorClass = 'text-gray-400';
+        let bgClass = 'bg-white';
+        let titleColorClass = 'text-slate-700';
+        
+        if (todo.completed) {
+          bgClass = 'bg-gray-50 opacity-70';
+          titleColorClass = 'line-through text-gray-400';
+        } else if (isExpired) {
+          // ★ 期限切れの場合は赤を強調
+          bgClass = 'bg-red-50';
+          borderColorClass = 'border-2 border-red-500 shadow-md animate-bounce-pulse'; 
+          iconColorClass = 'text-red-600';
+          titleColorClass = 'text-red-800 font-black';
+        } else {
+          if (todo.color === 'green') { borderColorClass = 'border-l-4 border-l-green-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-green-500'; }
+          else if (todo.color === 'yellow') { borderColorClass = 'border-l-4 border-l-yellow-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-yellow-500'; }
+          else if (todo.color === 'purple') { borderColorClass = 'border-l-4 border-l-purple-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-purple-500'; }
+          else if (todo.color === 'orange') { borderColorClass = 'border-l-4 border-l-[#f28b82] border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-[#f28b82]'; }
+          else { borderColorClass = 'border-l-4 border-l-blue-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-blue-500'; }
+        }
+
+        const priorityColors = {
+          '高': 'bg-red-50 text-red-600 border-red-200',
+          '中': 'bg-yellow-50 text-yellow-600 border-yellow-200',
+          '低': 'bg-blue-50 text-blue-600 border-blue-200'
+        };
+
+        const isMemo = todo.type === 'memo';
+
+        return (
+          <div className={`p-4 mb-4 rounded-2xl shadow-sm transition-all ${bgClass} ${borderColorClass}`}>
+            
+            {alertBadge && (
+              <div className="mb-3">
+                <span className={`text-xs px-3 py-1.5 rounded-lg border inline-block ${alertBadge.classes}`}>
+                  {alertBadge.label}
+                </span>
+              </div>
+            )}
+
+            <div className="flex items-start justify-between gap-3">
+              <button onClick={() => toggleComplete(todo.id)} className={`mt-1 flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-all ${todo.completed ? 'bg-[#98C4A6] text-white shadow-inner' : 'border-2 border-gray-300 hover:border-gray-500 bg-white'}`}>
+                {todo.completed && <i className="fa-solid fa-check text-xs"></i>}
+              </button>
+              
+              <div className="flex flex-col flex-1 min-w-0">
+                <span className={`text-[17px] tracking-tight truncate ${titleColorClass}`}>
+                  {isMemo && <i className="fa-solid fa-note-sticky text-orange-400 mr-1.5"></i>}
+                  {todo.title}
+                </span>
+                
+                {todo.description && (
+                  <p className={`mt-1 text-sm leading-relaxed whitespace-pre-wrap ${todo.completed ? 'text-gray-300' : (isExpired ? 'text-red-600 font-bold' : 'text-gray-500')}`}>
+                    {todo.description}
+                  </p>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  <span className={`text-[10px] px-2.5 py-1 rounded-md font-black border ${priorityColors[todo.priority || '中']}`}>
+                    {todo.priority || '中'}
+                  </span>
+                  
+                  {todo.dueDate && (
+                    <span className={`text-xs font-bold flex items-center gap-1.5 ml-1 ${isExpired ? 'text-red-700' : 'text-gray-500'}`}>
+                      <i className={`fa-solid fa-clock text-[10px] ${iconColorClass}`}></i>
+                      {new Date(todo.dueDate).toLocaleString('ja-JP', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}
+                    </span>
+                  )}
+
+                  {todo.mailNotify && !todo.completed && (
+                    <span className="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-md font-bold flex items-center gap-1">
+                      <i className="fa-regular fa-envelope"></i> 通知オン
+                    </span>
+                  )}
+                </div>
+              </div>
+              
+              <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                <div className="flex gap-2">
+                  <button onClick={() => startEdit(todo)} className="text-gray-400 hover:text-blue-500 transition-colors bg-gray-50 p-2 rounded-lg" title="修正・編集">
+                    <i className="fa-solid fa-pen text-sm"></i>
+                  </button>
+                  <button onClick={() => deleteTodo(todo.id)} className="text-gray-400 hover:text-red-500 transition-colors bg-gray-50 p-2 rounded-lg" title="削除">
+                    <i className="fa-solid fa-trash-can text-sm"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* カレンダーへ直に飛べる大きいボタンを追加 */}
+            {!todo.completed && todo.dueDate && (
+              <div className="mt-4 pt-3 border-t border-gray-100">
+                 <a href={getGoogleCalendarUrl(todo)} target="_blank" rel="noopener noreferrer" 
+                    className="flex items-center justify-center gap-2 w-full py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-bold rounded-xl border border-blue-200 transition-all active:scale-95">
+                   <i className="fa-brands fa-google"></i> カレンダーに予定を追加する
+                 </a>
+              </div>
+            )}
+
+            {todo.imageUrl && (
+              <div className="mt-4">
+                <img src={todo.imageUrl} alt="添付" className="max-h-48 w-full object-cover rounded-xl border border-gray-100 shadow-sm" />
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      const renderTodoForm = (onSubmit, submitLabel, isEdit) => (
+        <form onSubmit={onSubmit} className="flex flex-col gap-5">
+          <div className="flex bg-gray-100 p-1 rounded-xl mb-2">
+            <button type="button" onClick={() => setNewType('todo')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-black text-sm transition-all ${newType === 'todo' ? 'bg-white shadow-sm text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+              <i className="fa-solid fa-bolt text-yellow-500"></i> TODO
+            </button>
+            <button type="button" onClick={() => setNewType('memo')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-black text-sm transition-all ${newType === 'memo' ? 'bg-white shadow-sm text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+              <i className="fa-solid fa-note-sticky text-orange-400"></i> 記憶・メモ
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            <input 
+              type="text" 
+              placeholder={newType === 'memo' ? "記憶したいことを入力..." : "タスクを入力..."} 
+              value={newTitle} 
+              onChange={(e) => setNewTitle(e.target.value)} 
+              className="w-full px-4 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none font-black text-xl text-gray-900 placeholder-gray-500 transition-all shadow-sm" 
+            />
+            <textarea 
+              placeholder="詳細・メモを入力してください..." 
+              value={newDescription} 
+              onChange={(e) => setNewDescription(e.target.value)} 
+              rows="3" 
+              className="w-full px-4 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none font-bold text-sm text-gray-900 placeholder-gray-500 resize-none transition-all shadow-sm" 
+            />
+          </div>
+
+          <div className="flex flex-col gap-4 bg-white border-2 border-gray-200 p-4 rounded-2xl shadow-sm">
+            <div className="flex items-center gap-4">
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest w-12">優先度</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setNewPriority('高')} className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${newPriority === '高' ? 'bg-red-500 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-red-50 hover:text-red-400'}`}>高</button>
+                <button type="button" onClick={() => setNewPriority('中')} className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${newPriority === '中' ? 'bg-yellow-500 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-yellow-50 hover:text-yellow-500'}`}>中</button>
+                <button type="button" onClick={() => setNewPriority('低')} className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${newPriority === '低' ? 'bg-blue-500 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-blue-50 hover:text-blue-500'}`}>低</button>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest w-12">カラー</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setNewColor('blue')} className={`w-7 h-7 rounded-full bg-blue-400 transition-all ${newColor === 'blue' ? 'ring-4 ring-blue-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('green')} className={`w-7 h-7 rounded-full bg-green-400 transition-all ${newColor === 'green' ? 'ring-4 ring-green-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('yellow')} className={`w-7 h-7 rounded-full bg-yellow-400 transition-all ${newColor === 'yellow' ? 'ring-4 ring-yellow-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('purple')} className={`w-7 h-7 rounded-full bg-purple-400 transition-all ${newColor === 'purple' ? 'ring-4 ring-purple-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('orange')} className={`w-7 h-7 rounded-full bg-[#f28b82] transition-all ${newColor === 'orange' ? 'ring-4 ring-red-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="text-[10px] font-black text-gray-500 ml-1 mb-1 block uppercase tracking-widest">開始・期限 <span className="text-red-500">*</span></label>
+              <input type="datetime-local" value={newDueDate} onChange={(e) => setNewDueDate(e.target.value)} required={newMailNotify} className="w-full px-3 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none text-xs font-bold text-gray-900 shadow-sm" />
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] font-black text-gray-500 ml-1 mb-1 block uppercase tracking-widest">終了(任意)</label>
+              <input type="datetime-local" value={newEndDate} onChange={(e) => setNewEndDate(e.target.value)} className="w-full px-3 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none text-xs font-bold text-gray-900 shadow-sm" />
+            </div>
+          </div>
+
+          {/* メール通知設定スイッチ（新機能） */}
+          <div className="bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl flex items-center justify-between">
+            <div>
+              <p className="text-sm font-black text-blue-800 flex items-center gap-2">
+                <i className="fa-solid fa-envelope"></i> メール通知
+              </p>
+              <p className="text-[10px] text-blue-600 mt-1">期日の2日前と3時間前にお知らせします<br/>※要GAS連携設定</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" className="sr-only peer" checked={newMailNotify} onChange={(e) => setNewMailNotify(e.target.checked)} />
+              <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+            </label>
+          </div>
+
+          <div className="flex items-center gap-4 py-2">
+            <label className="cursor-pointer flex items-center justify-center px-5 py-2.5 bg-gray-100 text-gray-700 border-2 border-gray-200 rounded-xl font-black text-xs hover:bg-gray-200 transition-all">
+              <i className="fa-solid fa-camera mr-2"></i> 写真を追加
+              <input type="file" accept="image/*" className="hidden" onChange={handleImageChange} />
+            </label>
+            {newImage && (
+              <div className="relative inline-block">
+                <img src={newImage} alt="Preview" className="h-12 w-12 object-cover rounded-xl border-2 border-gray-200 shadow-sm" />
+                <button type="button" onClick={() => setNewImage(null)} className="absolute -top-2 -right-2 bg-slate-800 text-white rounded-full w-6 h-6 flex items-center justify-center shadow-lg active:scale-90"><i className="fa-solid fa-xmark text-xs"></i></button>
+              </div>
+            )}
+          </div>
+
+          <button type="submit" disabled={!newTitle.trim()} className="w-full py-4.5 bg-slate-800 text-white font-black text-lg rounded-[2rem] shadow-xl shadow-slate-200 active:scale-95 transition-all disabled:opacity-30 mt-2">
+            {submitLabel}
+          </button>
+        </form>
+      );
+
+      return (
+        <div className="min-h-screen py-8 px-4 text-slate-700">
+          <div className="max-w-md mx-auto pb-24">
+            
+            <div className="flex justify-between items-center mb-8">
+              <button onClick={() => {resetForm(); setCurrentView('settings');}} className="w-10 h-10 flex items-center justify-center text-gray-500 hover:text-slate-800 bg-white rounded-full shadow-sm border-2 border-gray-200 transition-all active:scale-90"><i className="fa-solid fa-gear"></i></button>
+              <h1 className="text-2xl font-black tracking-tighter flex items-center gap-2"><i className="fa-solid fa-calendar-check text-[#98C4A6]"></i> TODO管理</h1>
+              <div className="w-10"></div>
+            </div>
+
+            {currentView === 'input' && (
+              <div className="animate-in fade-in">
+                <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border-2 border-gray-100 mb-8">
+                  {renderTodoForm(addTodo, "リストに追加する", false)}
+                </div>
+              </div>
+            )}
+
+            {currentView === 'edit' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                <button onClick={() => {resetForm(); setCurrentView(editingTodo?.type === 'memo' ? 'memo' : 'list');}} className="mb-6 flex items-center gap-3 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> キャンセル</button>
+                <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border-2 border-blue-200 mb-8 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-2 bg-blue-400"></div>
+                  <h2 className="text-center font-bold text-blue-800 mb-4 mt-2">内容を修正する</h2>
+                  {renderTodoForm(updateTodo, "変更を保存する", true)}
+                </div>
+              </div>
+            )}
+
+            {/* --- 進行中TODOリスト画面 --- */}
+            {currentView === 'list' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                
+                {/* 期限切れアラートバナー */}
+                {expiredTodos.length > 0 && (
+                  <div className="mb-6 bg-red-600 text-white p-4 rounded-2xl shadow-lg border-2 border-red-700 animate-in fade-in">
+                    <h3 className="font-black flex items-center gap-2 text-lg">
+                      <i className="fa-solid fa-triangle-exclamation animate-bounce"></i> 警告：期限切れのタスクがあります！
+                    </h3>
+                    <p className="text-sm mt-1 font-bold opacity-90">赤い枠のタスクを至急確認してください。</p>
+                  </div>
+                )}
+
+                <h2 className="text-lg font-black text-slate-700 mb-4 ml-2 flex items-center gap-2">
+                  <i className="fa-solid fa-bolt text-yellow-500"></i> 進行中のタスク
+                </h2>
+                <div className="space-y-2">
+                  {activeTodos.length > 0 ? (
+                    activeTodos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
+                  ) : (
+                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">進行中のタスクはありません 🎉</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* --- 記憶・メモ画面 --- */}
+            {currentView === 'memo' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                <h2 className="text-lg font-black text-slate-700 mb-4 ml-2 flex items-center gap-2">
+                  <i className="fa-solid fa-note-sticky text-orange-400"></i> 記憶・メモ
+                </h2>
+                <div className="space-y-2">
+                  {activeMemos.length > 0 ? (
+                    activeMemos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
+                  ) : (
+                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">記憶しているメモはありません 📝</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* --- 完了履歴画面 --- */}
+            {currentView === 'history' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                <h2 className="text-lg font-black text-slate-500 mb-4 ml-2 flex items-center gap-2">
+                  <i className="fa-solid fa-box-archive text-gray-400"></i> 完了した履歴
+                </h2>
+                <div className="space-y-2">
+                  {completedTodos.length > 0 ? (
+                    completedTodos.map(todo => <TodoItem key={todo.id} todo={todo} />)
+                  ) : (
+                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">まだ完了した履歴はありません</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* --- 設定画面 --- */}
+            {currentView === 'settings' && (
+              <div className="animate-in fade-in">
+                <button onClick={() => setCurrentView('input')} className="mb-8 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> 戻る</button>
+                <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border-2 border-gray-100 text-center">
+                  <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <i className="fa-solid fa-gear text-2xl text-gray-400"></i>
+                  </div>
+                  <h2 className="text-xl font-black mb-8">システム設定</h2>
+                  <div className="space-y-6 text-left">
+                    <div>
+                      <label className="text-[10px] font-black text-gray-500 mb-2 block uppercase tracking-widest ml-1">GAS Web App URL</label>
+                      <input type="text" value={gasUrl} onChange={(e) => setGasUrl(e.target.value)} placeholder="https://script.google.com/..." className="w-full px-5 py-4 bg-white border-2 border-gray-400 rounded-2xl focus:border-gray-700 focus:outline-none font-bold text-gray-900 transition-all" />
+                      <p className="text-xs text-gray-500 mt-2">※メール通知を自動で送るには、GAS側で1時間おきに実行されるタイマートリガーを設定し、送信処理を記述する必要があります。</p>
+                    </div>
+                    <button onClick={() => saveGasUrl(gasUrl)} className="w-full py-4.5 bg-[#98C4A6] text-white font-black rounded-2xl shadow-xl shadow-[#98C4A6]/20 transition-all active:scale-95">設定を保存</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 下部固定ナビゲーションバー */}
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-100 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.02)] z-50">
+              <div className="max-w-md mx-auto flex justify-around items-center p-2">
+                <button onClick={() => {resetForm(); setCurrentView('input');}} className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'input' ? 'text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+                  <i className="fa-solid fa-plus text-xl"></i>
+                  <span className="text-[10px] font-bold">追加</span>
+                </button>
+                <button onClick={() => {resetForm(); setCurrentView('list');}} className={`relative flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'list' || currentView === 'edit' ? 'text-[#98C4A6]' : 'text-gray-400 hover:text-gray-600'}`}>
+                  {expiredTodos.length > 0 && <span className="absolute top-1 right-2 w-2.5 h-2.5 bg-red-500 rounded-full"></span>}
+                  <i className="fa-solid fa-bolt text-xl"></i>
+                  <span className="text-[10px] font-bold">TODO</span>
+                </button>
+                <button onClick={() => {resetForm(); setCurrentView('memo');}} className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'memo' ? 'text-orange-400' : 'text-gray-400 hover:text-gray-600'}`}>
+                  <i className="fa-solid fa-note-sticky text-xl"></i>
+                  <span className="text-[10px] font-bold">メモ</span>
+                </button>
+                <button onClick={() => {resetForm(); setCurrentView('history');}} className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'history' ? 'text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+                  <i className="fa-solid fa-box-archive text-xl"></i>
+                  <span className="text-[10px] font-bold">履歴</span>
+                </button>
+              </div>
+            </div>
+            
+          </div>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
