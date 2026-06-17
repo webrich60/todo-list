@@ -6,9 +6,14 @@
   <title>TODO管理 - リマインダー＆カレンダー強化版</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- 安定性が保証されている React 18 と ReactDOM 18 の UMDビルド（cdnjs）を使用します -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- ブラウザでの競合やインポートエラーを起こさない、動作実績の高いバージョンのBabel Standaloneを使用します -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
+  
   <style>
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes slideInRight { from { transform: translateX(2rem); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
@@ -34,7 +39,6 @@
 
     const App = () => {
       const [currentTime, setCurrentTime] = useState(new Date());
-      // view: input(追加), list(TODO), memo(メモ), history(完了済), edit(編集), settings(設定)
       const [currentView, setCurrentView] = useState('input'); 
       const [filter, setFilter] = useState('all');
       
@@ -55,7 +59,7 @@
       const [newImage, setNewImage] = useState(null);
       const [newColor, setNewColor] = useState('blue');
       const [newPriority, setNewPriority] = useState('中');
-      const [newMailNotify, setNewMailNotify] = useState(false); // メール通知フラグ追加
+      const [newMailNotify, setNewMailNotify] = useState(false); // メール通知フラグ
 
       // 自動保存
       useEffect(() => {
@@ -67,7 +71,7 @@
         return () => clearTimeout(timeoutId);
       }, [todos, gasUrl]);
 
-      // 1分ごとに現在時刻を更新（期限切れ判定用）
+      // 1分ごとに現在時刻を更新
       useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 60000);
         return () => clearInterval(timer);
@@ -107,7 +111,7 @@
           endDate: newEndDate || null,
           color: newColor, 
           priority: newPriority,
-          mailNotify: newMailNotify, // 通知希望フラグ
+          mailNotify: newMailNotify, 
           completed: false, 
           imageUrl: newImage 
         };
@@ -115,7 +119,7 @@
         resetForm();
       };
 
-      // タスクの修正（更新）
+      // タスクの修正
       const updateTodo = (e) => {
         e.preventDefault();
         if (!newTitle.trim() || !editingTodo) return;
@@ -164,7 +168,6 @@
         setTodos(todos.map(todo => todo.id === id ? { ...todo, completed: !todo.completed } : todo));
       };
 
-      // GASへのエクスポート (メール通知フラグも含めて送信)
       const exportToSpreadsheet = async (isAuto = false) => {
         if (!gasUrl) return;
         try {
@@ -202,12 +205,10 @@
         return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&details=${details}${dates}`;
       };
 
-      // 分類とソート
       const activeTodos = todos.filter(todo => !todo.completed && (todo.type === 'todo' || !todo.type));
       const activeMemos = todos.filter(todo => !todo.completed && todo.type === 'memo');
       const completedTodos = todos.filter(todo => todo.completed).sort((a, b) => b.id - a.id);
 
-      // 期限切れタスクの抽出
       const expiredTodos = activeTodos.filter(todo => todo.dueDate && new Date(todo.dueDate) < currentTime);
 
       const sortFunction = (a, b) => {
@@ -232,7 +233,6 @@
         return null;
       };
 
-      // タスク/メモカードコンポーネント
       const TodoItem = ({ todo }) => {
         const isExpired = !todo.completed && todo.dueDate && new Date(todo.dueDate) < currentTime;
         const alertBadge = !todo.completed ? getAlertBadge(todo.dueDate) : null;
@@ -246,7 +246,6 @@
           bgClass = 'bg-gray-50 opacity-70';
           titleColorClass = 'line-through text-gray-400';
         } else if (isExpired) {
-          // ★ 期限切れの場合は赤を強調
           bgClass = 'bg-red-50';
           borderColorClass = 'border-2 border-red-500 shadow-md animate-bounce-pulse'; 
           iconColorClass = 'text-red-600';
@@ -327,7 +326,6 @@
               </div>
             </div>
 
-            {/* カレンダーへ直に飛べる大きいボタンを追加 */}
             {!todo.completed && todo.dueDate && (
               <div className="mt-4 pt-3 border-t border-gray-100">
                  <a href={getGoogleCalendarUrl(todo)} target="_blank" rel="noopener noreferrer" 
@@ -406,7 +404,6 @@
             </div>
           </div>
 
-          {/* メール通知設定スイッチ（新機能） */}
           <div className="bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl flex items-center justify-between">
             <div>
               <p className="text-sm font-black text-blue-800 flex items-center gap-2">
