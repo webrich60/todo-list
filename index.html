@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TODO管理 - リマインダー＆カレンダー強化版</title>
+  <title>TODO管理 - 双方向同期＆完全自動カレンダー連携版</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   
@@ -39,8 +39,10 @@
 
     const App = () => {
       const [currentTime, setCurrentTime] = useState(new Date());
-      const [currentView, setCurrentView] = useState('input'); 
+      const [currentView, setCurrentView] = useState('list'); // 起動時は一覧（TODOリスト）をデフォルトにします
       const [filter, setFilter] = useState('all');
+      const [isLoading, setIsLoading] = useState(false);
+      const [isSyncing, setIsSyncing] = useState(false);
       
       const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('gas_url') || '');
 
@@ -61,27 +63,43 @@
       const [newPriority, setNewPriority] = useState('中');
       const [newMailNotify, setNewMailNotify] = useState(false); // メール通知フラグ
 
-      // 自動保存
+      // アプリ起動時（マウント時）にスプレッドシートから最新データを読み込む
       useEffect(() => {
-        localStorage.setItem('todos', JSON.stringify(todos));
-        if (!gasUrl) return;
-        const timeoutId = setTimeout(() => {
-          exportToSpreadsheet(true);
-        }, 1500);
-        return () => clearTimeout(timeoutId);
-      }, [todos, gasUrl]);
+        loadTodosFromSpreadsheet();
+      }, [gasUrl]);
 
-      // 1分ごとに現在時刻を更新
+      // 1分ごとに現在時刻を更新（期限切れバッジ判定用）
       useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 60000);
         return () => clearInterval(timer);
       }, []);
 
+      // スプレッドシート（GAS）からデータを読み込む関数
+      const loadTodosFromSpreadsheet = async () => {
+        if (!gasUrl) return;
+        setIsLoading(true);
+        try {
+          // GASに対してGETリクエストを送ってデータを読み込みます
+          const response = await fetch(gasUrl);
+          if (response.ok) {
+            const data = await response.json();
+            if (Array.isArray(data)) {
+              setTodos(data);
+              localStorage.setItem('todos', JSON.stringify(data));
+            }
+          }
+        } catch (error) {
+          console.error('スプレッドシートからの読み込みに失敗しました:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
       const saveGasUrl = (url) => {
         setGasUrl(url.trim());
         localStorage.setItem('gas_url', url.trim());
-        alert('連携URLを保存しました。メール通知機能を利用するにはGAS側の設定が必要です。');
-        setCurrentView('input');
+        alert('連携URLを保存しました。自動読み込みを開始します。');
+        setCurrentView('list');
       };
 
       const handleImageChange = (e) => {
@@ -98,8 +116,35 @@
         setNewImage(null); setNewColor('blue'); setNewPriority('中'); setNewMailNotify(false); setEditingTodo(null);
       };
 
+      // GASへのエクスポート (リアルタイム即時反映版)
+      const exportToSpreadsheet = async (currentTodos) => {
+        if (!gasUrl) return;
+        setIsSyncing(true);
+        try {
+          const exportData = currentTodos.map(t => ({ 
+            id: t.id, 
+            type: t.type || 'todo', 
+            title: t.title, 
+            description: t.description || '', 
+            priority: t.priority || '中',
+            dueDate: t.dueDate || '期限なし', 
+            endDate: t.endDate || '', 
+            color: t.color || 'blue',
+            mailNotify: t.mailNotify ? '希望する' : '希望しない',
+            completed: t.completed ? '完了' : '未完了' 
+          }));
+          await fetch(gasUrl, { 
+            method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exportData) 
+          });
+        } catch (error) {
+          console.error('同期エラー:', error);
+        } finally {
+          setIsSyncing(false);
+        }
+      };
+
       // タスクの追加
-      const addTodo = (e) => {
+      const addTodo = async (e) => {
         e.preventDefault();
         if (!newTitle.trim()) return;
         const newTodo = { 
@@ -115,12 +160,17 @@
           completed: false, 
           imageUrl: newImage 
         };
-        setTodos([...todos, newTodo]);
+        const updatedTodos = [...todos, newTodo];
+        setTodos(updatedTodos);
+        localStorage.setItem('todos', JSON.stringify(updatedTodos));
         resetForm();
+        setCurrentView('list');
+        // 追加された瞬間にGASを通じてカレンダー＆スプレッドシートに自動反映！
+        await exportToSpreadsheet(updatedTodos);
       };
 
       // タスクの修正
-      const updateTodo = (e) => {
+      const updateTodo = async (e) => {
         e.preventDefault();
         if (!newTitle.trim() || !editingTodo) return;
         
@@ -137,10 +187,14 @@
           imageUrl: newImage
         };
         
-        setTodos(todos.map(t => t.id === editingTodo.id ? updatedTodo : t));
+        const updatedTodos = todos.map(t => t.id === editingTodo.id ? updatedTodo : t);
+        setTodos(updatedTodos);
+        localStorage.setItem('todos', JSON.stringify(updatedTodos));
         const viewToReturn = updatedTodo.completed ? 'history' : (updatedTodo.type === 'memo' ? 'memo' : 'list');
         resetForm();
         setCurrentView(viewToReturn);
+        // 更新された瞬間に自動同期！
+        await exportToSpreadsheet(updatedTodos);
       };
 
       // 編集画面を開く
@@ -158,37 +212,20 @@
         setCurrentView('edit');
       };
 
-      const deleteTodo = (id) => {
+      const deleteTodo = async (id) => {
         if (window.confirm('完全に削除してもよろしいですか？')) {
-          setTodos(todos.filter(todo => todo.id !== id));
+          const updatedTodos = todos.filter(todo => todo.id !== id);
+          setTodos(updatedTodos);
+          localStorage.setItem('todos', JSON.stringify(updatedTodos));
+          await exportToSpreadsheet(updatedTodos);
         }
       };
 
-      const toggleComplete = (id) => {
-        setTodos(todos.map(todo => todo.id === id ? { ...todo, completed: !todo.completed } : todo));
-      };
-
-      const exportToSpreadsheet = async (isAuto = false) => {
-        if (!gasUrl) return;
-        try {
-          const exportData = todos.map(t => ({ 
-            id: t.id, 
-            type: t.type || 'todo', 
-            title: t.title, 
-            description: t.description || '', 
-            priority: t.priority || '中',
-            dueDate: t.dueDate || '期限なし', 
-            endDate: t.endDate || '', 
-            color: t.color || 'blue',
-            mailNotify: t.mailNotify ? '希望する' : '希望しない',
-            completed: t.completed ? '完了' : '未完了' 
-          }));
-          await fetch(gasUrl, { 
-            method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exportData) 
-          });
-        } catch (error) {
-          console.error('Export Error:', error);
-        }
+      const toggleComplete = async (id) => {
+        const updatedTodos = todos.map(todo => todo.id === id ? { ...todo, completed: !todo.completed } : todo);
+        setTodos(updatedTodos);
+        localStorage.setItem('todos', JSON.stringify(updatedTodos));
+        await exportToSpreadsheet(updatedTodos);
       };
 
       const getGoogleCalendarUrl = (todo) => {
@@ -327,11 +364,14 @@
             </div>
 
             {!todo.completed && todo.dueDate && (
-              <div className="mt-4 pt-3 border-t border-gray-100">
+              <div className="mt-4 pt-3 border-t border-gray-100 flex gap-2">
                  <a href={getGoogleCalendarUrl(todo)} target="_blank" rel="noopener noreferrer" 
-                    className="flex items-center justify-center gap-2 w-full py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-bold rounded-xl border border-blue-200 transition-all active:scale-95">
-                   <i className="fa-brands fa-google"></i> カレンダーに予定を追加する
+                    className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-bold rounded-xl border border-blue-200 text-xs transition-all active:scale-95">
+                   <i className="fa-brands fa-google"></i> 手動カレンダー追加
                  </a>
+                 <div className="flex-1 flex items-center justify-center gap-1 text-slate-400 border border-gray-200 rounded-xl bg-gray-50 text-[11px] font-bold">
+                   <i className="fa-solid fa-cloud-arrow-up text-green-400"></i> カレンダー自動同期済
+                 </div>
               </div>
             )}
 
@@ -442,8 +482,32 @@
             
             <div className="flex justify-between items-center mb-8">
               <button onClick={() => {resetForm(); setCurrentView('settings');}} className="w-10 h-10 flex items-center justify-center text-gray-500 hover:text-slate-800 bg-white rounded-full shadow-sm border-2 border-gray-200 transition-all active:scale-90"><i className="fa-solid fa-gear"></i></button>
-              <h1 className="text-2xl font-black tracking-tighter flex items-center gap-2"><i className="fa-solid fa-calendar-check text-[#98C4A6]"></i> TODO管理</h1>
-              <div className="w-10"></div>
+              
+              <div className="flex flex-col items-center">
+                <h1 className="text-2xl font-black tracking-tighter flex items-center gap-2"><i className="fa-solid fa-calendar-check text-[#98C4A6]"></i> TODO管理</h1>
+                
+                {/* 同期ステータスの小さな表示 */}
+                {gasUrl && (
+                  <span className="text-[10px] text-gray-400 mt-1 font-bold flex items-center gap-1">
+                    {isSyncing ? (
+                      <><i className="fa-solid fa-arrows-rotate animate-spin text-blue-400"></i> クラウドと同期中...</>
+                    ) : isLoading ? (
+                      <><i className="fa-solid fa-spinner animate-spin text-green-400"></i> 読み込み中...</>
+                    ) : (
+                      <><i className="fa-solid fa-cloud text-green-500"></i> スプレッドシート同期中</>
+                    )}
+                  </span>
+                )}
+              </div>
+              
+              {/* スプレッドシートから強制再読込ボタン */}
+              {gasUrl ? (
+                <button onClick={loadTodosFromSpreadsheet} title="スプレッドシートから再読込" className="w-10 h-10 flex items-center justify-center text-gray-500 hover:text-slate-800 bg-white rounded-full shadow-sm border-2 border-gray-200 transition-all active:scale-90">
+                  <i className="fa-solid fa-arrows-rotate"></i>
+                </button>
+              ) : (
+                <div className="w-10"></div>
+              )}
             </div>
 
             {currentView === 'input' && (
@@ -482,13 +546,20 @@
                 <h2 className="text-lg font-black text-slate-700 mb-4 ml-2 flex items-center gap-2">
                   <i className="fa-solid fa-bolt text-yellow-500"></i> 進行中のタスク
                 </h2>
-                <div className="space-y-2">
-                  {activeTodos.length > 0 ? (
-                    activeTodos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
-                  ) : (
-                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">進行中のタスクはありません 🎉</div>
-                  )}
-                </div>
+                
+                {isLoading ? (
+                  <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">
+                    <i className="fa-solid fa-spinner animate-spin text-green-400 mr-2"></i>データを読込中...
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {activeTodos.length > 0 ? (
+                      activeTodos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
+                    ) : (
+                      <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">進行中のタスクはありません 🎉</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -498,13 +569,19 @@
                 <h2 className="text-lg font-black text-slate-700 mb-4 ml-2 flex items-center gap-2">
                   <i className="fa-solid fa-note-sticky text-orange-400"></i> 記憶・メモ
                 </h2>
-                <div className="space-y-2">
-                  {activeMemos.length > 0 ? (
-                    activeMemos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
-                  ) : (
-                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">記憶しているメモはありません 📝</div>
-                  )}
-                </div>
+                {isLoading ? (
+                  <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">
+                    <i className="fa-solid fa-spinner animate-spin text-orange-400 mr-2"></i>データを読込中...
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {activeMemos.length > 0 ? (
+                      activeMemos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
+                    ) : (
+                      <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">記憶しているメモはありません 📝</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -514,20 +591,26 @@
                 <h2 className="text-lg font-black text-slate-500 mb-4 ml-2 flex items-center gap-2">
                   <i className="fa-solid fa-box-archive text-gray-400"></i> 完了した履歴
                 </h2>
-                <div className="space-y-2">
-                  {completedTodos.length > 0 ? (
-                    completedTodos.map(todo => <TodoItem key={todo.id} todo={todo} />)
-                  ) : (
-                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">まだ完了した履歴はありません</div>
-                  )}
-                </div>
+                {isLoading ? (
+                  <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">
+                    <i className="fa-solid fa-spinner animate-spin text-gray-400 mr-2"></i>データを読込中...
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {completedTodos.length > 0 ? (
+                      completedTodos.map(todo => <TodoItem key={todo.id} todo={todo} />)
+                    ) : (
+                      <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">まだ完了した履歴はありません</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
             {/* --- 設定画面 --- */}
             {currentView === 'settings' && (
               <div className="animate-in fade-in">
-                <button onClick={() => setCurrentView('input')} className="mb-8 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> 戻る</button>
+                <button onClick={() => setCurrentView('list')} className="mb-8 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> 戻る</button>
                 <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border-2 border-gray-100 text-center">
                   <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6">
                     <i className="fa-solid fa-gear text-2xl text-gray-400"></i>
