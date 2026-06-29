@@ -74,25 +74,40 @@
         return () => clearInterval(timer);
       }, []);
 
-      // スプレッドシート（GAS）からデータを読み込む関数
-      const loadTodosFromSpreadsheet = async () => {
+      // スプレッドシート（GAS）からデータを読み込む関数 (JSONP方式に変更)
+      const loadTodosFromSpreadsheet = () => {
         if (!gasUrl) return;
         setIsLoading(true);
-        try {
-          // GASに対してGETリクエストを送ってデータを読み込みます
-          const response = await fetch(gasUrl);
-          if (response.ok) {
-            const data = await response.json();
-            if (Array.isArray(data)) {
-              setTodos(data);
-              localStorage.setItem('todos', JSON.stringify(data));
-            }
+        
+        const callbackName = 'gasCallback_' + Date.now();
+        
+        // データの受け取り口を準備
+        window[callbackName] = (data) => {
+          if (Array.isArray(data)) {
+            setTodos(data);
+            localStorage.setItem('todos', JSON.stringify(data));
           }
-        } catch (error) {
-          console.error('スプレッドシートからの読み込みに失敗しました:', error);
-        } finally {
           setIsLoading(false);
-        }
+          delete window[callbackName];
+          const scriptEl = document.getElementById(callbackName);
+          if (scriptEl) scriptEl.remove();
+        };
+
+        // スクリプトタグを使って通信（CORSエラーを回避）
+        const script = document.createElement('script');
+        script.id = callbackName;
+        const separator = gasUrl.includes('?') ? '&' : '?';
+        script.src = `${gasUrl}${separator}callback=${callbackName}`;
+        
+        script.onerror = () => {
+          console.error('スプレッドシートからの読み込みに失敗しました');
+          setIsLoading(false);
+          delete window[callbackName];
+          script.remove();
+          alert('データの読み込みに失敗しました。連携URLが正しいか確認してください。');
+        };
+        
+        document.body.appendChild(script);
       };
 
       const saveGasUrl = (url) => {
@@ -114,6 +129,79 @@
       const resetForm = () => {
         setNewType('todo'); setNewTitle(''); setNewDescription(''); setNewDueDate(''); setNewEndDate(''); 
         setNewImage(null); setNewColor('blue'); setNewPriority('中'); setNewMailNotify(false); setEditingTodo(null);
+      };
+
+      // --- CSVインポート（復元）機能 ---
+      const handleCSVImport = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          const text = event.target.result;
+          
+          // CSVを解析するヘルパー関数（ダブルクォーテーション対応）
+          const parseCSV = (str) => {
+            const result = [];
+            let row = [];
+            let inQuotes = false;
+            let field = '';
+            for (let i = 0; i < str.length; i++) {
+              let char = str[i];
+              if (inQuotes) {
+                if (char === '"') {
+                  if (str[i + 1] === '"') { field += '"'; i++; }
+                  else { inQuotes = false; }
+                } else { field += char; }
+              } else {
+                if (char === '"') { inQuotes = true; }
+                else if (char === ',') { row.push(field); field = ''; }
+                else if (char === '\n') { row.push(field); result.push(row); row = []; field = ''; }
+                else if (char !== '\r') { field += char; }
+              }
+            }
+            if (field !== '') row.push(field);
+            if (row.length > 0) result.push(row);
+            return result;
+          };
+
+          const rows = parseCSV(text);
+          if (rows.length <= 1) {
+            alert('有効なデータが見つかりませんでした。');
+            e.target.value = '';
+            return;
+          }
+
+          const importedTodos = [];
+          // 1行目はヘッダーなので2行目から読み込む
+          for (let i = 1; i < rows.length; i++) {
+            const cols = rows[i];
+            if (!cols[0]) continue; // IDがない行はスキップ
+
+            importedTodos.push({
+              id: Number(cols[0]),
+              type: cols[1] === 'メモ' ? 'memo' : 'todo',
+              title: cols[2] || '',
+              description: cols[3] || '',
+              priority: cols[4] || '中',
+              dueDate: cols[5] && cols[5] !== '期限なし' ? cols[5] : null,
+              endDate: cols[6] || null,
+              color: cols[7] || 'blue',
+              completed: cols[8] === '完了',
+              mailNotify: cols[9] === '希望する'
+            });
+          }
+
+          if (window.confirm(`CSVファイルから ${importedTodos.length} 件のデータを復元します。\n現在のアプリ内のデータとスプレッドシートのデータは上書きされますがよろしいですか？`)) {
+            setTodos(importedTodos);
+            localStorage.setItem('todos', JSON.stringify(importedTodos));
+            alert('データのインポートが完了しました。クラウド（GAS）に同期します。');
+            setCurrentView('list');
+            await exportToSpreadsheet(importedTodos);
+          }
+          e.target.value = ''; // ファイル選択のリセット
+        };
+        reader.readAsText(file);
       };
 
       // GASへのエクスポート (リアルタイム即時反映版)
@@ -623,6 +711,20 @@
                       <p className="text-xs text-gray-500 mt-2">※メール通知を自動で送るには、GAS側で1時間おきに実行されるタイマートリガーを設定し、送信処理を記述する必要があります。</p>
                     </div>
                     <button onClick={() => saveGasUrl(gasUrl)} className="w-full py-4.5 bg-[#98C4A6] text-white font-black rounded-2xl shadow-xl shadow-[#98C4A6]/20 transition-all active:scale-95">設定を保存</button>
+                    
+                    {/* CSVインポートセクションの追加 */}
+                    <div className="mt-8 pt-6 border-t-2 border-gray-100">
+                      <h3 className="text-sm font-black text-slate-700 mb-2 flex items-center gap-2">
+                        <i className="fa-solid fa-file-import text-blue-500"></i> 万が一のデータ復元
+                      </h3>
+                      <p className="text-[10px] text-gray-500 mb-4 leading-relaxed font-bold">
+                        Googleドライブ（TODO管理アプリ_データ フォルダ）に自動保存されているバックアップファイル（CSV）を選択すると、過去のデータに復元できます。
+                      </p>
+                      <label className="cursor-pointer flex items-center justify-center w-full py-4 bg-white border-2 border-blue-400 text-blue-500 font-black rounded-2xl hover:bg-blue-50 transition-all active:scale-95 shadow-sm">
+                        <i className="fa-solid fa-folder-open mr-2 text-lg"></i> CSVからデータを復元
+                        <input type="file" accept=".csv" className="hidden" onChange={handleCSVImport} />
+                      </label>
+                    </div>
                   </div>
                 </div>
               </div>
