@@ -74,15 +74,17 @@
         return () => clearInterval(timer);
       }, []);
 
-      // スプレッドシート（GAS）からデータを読み込む関数 (JSONP方式に変更)
+      // スプレッドシート（GAS）からデータを読み込む関数 (JSONP方式 + タイムアウト処理追加)
       const loadTodosFromSpreadsheet = () => {
         if (!gasUrl) return;
         setIsLoading(true);
         
         const callbackName = 'gasCallback_' + Date.now();
+        let timeoutId;
         
         // データの受け取り口を準備
         window[callbackName] = (data) => {
+          clearTimeout(timeoutId);
           if (Array.isArray(data)) {
             setTodos(data);
             localStorage.setItem('todos', JSON.stringify(data));
@@ -100,12 +102,22 @@
         script.src = `${gasUrl}${separator}callback=${callbackName}`;
         
         script.onerror = () => {
+          clearTimeout(timeoutId);
           console.error('スプレッドシートからの読み込みに失敗しました');
           setIsLoading(false);
           delete window[callbackName];
           script.remove();
           alert('データの読み込みに失敗しました。連携URLが正しいか確認してください。');
         };
+
+        // タイムアウト処理 (10秒)
+        timeoutId = setTimeout(() => {
+          console.error('読み込みがタイムアウトしました');
+          setIsLoading(false);
+          delete window[callbackName];
+          if (script.parentNode) script.remove();
+          alert('読み込みに時間がかかっています。\nGASエディタで「新しいデプロイ」が正しく行われているか確認してください。');
+        }, 10000);
         
         document.body.appendChild(script);
       };
@@ -722,7 +734,8 @@
                       </p>
                       <label className="cursor-pointer flex items-center justify-center w-full py-4 bg-white border-2 border-blue-400 text-blue-500 font-black rounded-2xl hover:bg-blue-50 transition-all active:scale-95 shadow-sm">
                         <i className="fa-solid fa-folder-open mr-2 text-lg"></i> CSVからデータを復元
-                        <input type="file" accept=".csv" className="hidden" onChange={handleCSVImport} />
+                        {/* 修正箇所：accept属性にスマホOSが認識しやすいMIMEタイプを追加しました */}
+                        <input type="file" accept=".csv, text/csv, application/csv, text/plain, application/vnd.ms-excel" className="hidden" onChange={handleCSVImport} />
                       </label>
                     </div>
                   </div>
