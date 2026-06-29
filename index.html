@@ -37,6 +37,39 @@
   <script type="text/babel">
     const { useState, useEffect } = React;
 
+    // --- 万が一のクラッシュ時に画面を真っ白にしないための安全装置（エラーバウンダリ） ---
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { hasError: false, errorMsg: '' };
+      }
+      static getDerivedStateFromError(error) {
+        return { hasError: true };
+      }
+      componentDidCatch(error, errorInfo) {
+        console.error("クラッシュエラー:", error, errorInfo);
+        this.setState({ errorMsg: error.toString() });
+      }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="min-h-screen py-16 px-4 text-center bg-red-50 text-red-800 flex flex-col items-center">
+              <i className="fa-solid fa-triangle-exclamation text-6xl text-red-400 mb-6"></i>
+              <h1 className="text-2xl font-black mb-4">アプリが停止しました</h1>
+              <p className="mb-4 font-bold text-sm">スプレッドシート内のデータ（特に日付）に、アプリが解釈できない形式の文字が含まれている可能性があります。</p>
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-red-200 text-xs text-left w-full max-w-md overflow-auto mb-6">
+                {this.state.errorMsg}
+              </div>
+              <button onClick={() => { localStorage.removeItem('todos'); window.location.reload(); }} className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-full shadow-lg transition-all active:scale-95">
+                ローカルデータをリセットして再読み込み
+              </button>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
     const App = () => {
       const [currentTime, setCurrentTime] = useState(new Date());
       const [currentView, setCurrentView] = useState('list'); // 起動時は一覧（TODOリスト）をデフォルトにします
@@ -284,9 +317,16 @@
         let dates = '';
         if (todo.dueDate) {
           const startDate = new Date(todo.dueDate);
-          const endDate = todo.endDate ? new Date(todo.endDate) : new Date(startDate.getTime() + 60 * 60 * 1000); 
-          const format = (date) => date.toISOString().replace(/-|:|\.\d\d\d/g, '');
-          dates = `&dates=${format(startDate)}/${format(endDate)}`;
+          // 日付が正常に解析できるかチェック
+          if (!isNaN(startDate.getTime())) {
+            let endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
+            if (todo.endDate) {
+              const parsedEnd = new Date(todo.endDate);
+              if (!isNaN(parsedEnd.getTime())) endDate = parsedEnd;
+            }
+            const format = (date) => date.toISOString().replace(/-|:|\.\d\d\d/g, '');
+            dates = `&dates=${format(startDate)}/${format(endDate)}`;
+          }
         }
         return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&details=${details}${dates}`;
       };
@@ -295,7 +335,12 @@
       const activeMemos = todos.filter(todo => !todo.completed && todo.type === 'memo');
       const completedTodos = todos.filter(todo => todo.completed).sort((a, b) => b.id - a.id);
 
-      const expiredTodos = activeTodos.filter(todo => todo.dueDate && new Date(todo.dueDate) < currentTime);
+      // 期限切れタスクの抽出 (エラー回避対応)
+      const expiredTodos = activeTodos.filter(todo => {
+        if (!todo.dueDate) return false;
+        const d = new Date(todo.dueDate);
+        return !isNaN(d.getTime()) && d < currentTime;
+      });
 
       const sortFunction = (a, b) => {
         const pOrder = { '高': 1, '中': 2, '低': 3 };
@@ -304,12 +349,15 @@
         if (pA !== pB) return pA - pB;
         if (!a.dueDate) return 1;
         if (!b.dueDate) return -1;
-        return new Date(a.dueDate) - new Date(b.dueDate);
+        const timeA = new Date(a.dueDate).getTime();
+        const timeB = new Date(b.dueDate).getTime();
+        return (isNaN(timeA) ? Infinity : timeA) - (isNaN(timeB) ? Infinity : timeB);
       };
 
       const getAlertBadge = (dueDate) => {
         if (!dueDate) return null;
         const due = new Date(dueDate);
+        if (isNaN(due.getTime())) return null; // 不正な日付の場合はバッジを出さない
         const diffHours = (due - currentTime) / (1000 * 60 * 60);
         
         if (diffHours < 0) return { label: '⚠️ 期限切れ！', classes: 'bg-red-600 text-white border-red-700 font-black animate-pulse shadow-lg' };
@@ -320,8 +368,11 @@
       };
 
       const TodoItem = ({ todo }) => {
-        const isExpired = !todo.completed && todo.dueDate && new Date(todo.dueDate) < currentTime;
-        const alertBadge = !todo.completed ? getAlertBadge(todo.dueDate) : null;
+        const dueObj = new Date(todo.dueDate);
+        const isValidDate = !isNaN(dueObj.getTime());
+        
+        const isExpired = !todo.completed && todo.dueDate && isValidDate && dueObj < currentTime;
+        const alertBadge = !todo.completed && isValidDate ? getAlertBadge(todo.dueDate) : null;
         
         let borderColorClass = 'border-gray-100';
         let iconColorClass = 'text-gray-400';
@@ -381,18 +432,18 @@
                 )}
 
                 <div className="flex flex-wrap items-center gap-2 mt-3">
-                  <span className={`text-[10px] px-2.5 py-1 rounded-md font-black border ${priorityColors[todo.priority || '中']}`}>
-                    {todo.priority || '中'}
-                  </span>
-                  
-                  {todo.dueDate && (
-                    <span className={`text-xs font-bold flex items-center gap-1.5 ml-1 ${isExpired ? 'text-red-700' : 'text-gray-500'}`}>
-                      <i className={`fa-solid fa-clock text-[10px] ${iconColorClass}`}></i>
-                      {new Date(todo.dueDate).toLocaleString('ja-JP', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}
-                    </span>
-                  )}
+              <span className={`text-[10px] px-2.5 py-1 rounded-md font-black border ${priorityColors[todo.priority || '中']}`}>
+                {todo.priority || '中'}
+              </span>
+              
+              {todo.dueDate && (
+                <span className={`text-xs font-bold flex items-center gap-1.5 ml-1 ${isExpired ? 'text-red-700' : 'text-gray-500'}`}>
+                  <i className={`fa-solid fa-clock text-[10px] ${iconColorClass}`}></i>
+                  {isValidDate ? dueObj.toLocaleString('ja-JP', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : String(todo.dueDate)}
+                </span>
+              )}
 
-                  {todo.mailNotify && !todo.completed && (
+              {todo.mailNotify && !todo.completed && (
                     <span className="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-md font-bold flex items-center gap-1">
                       <i className="fa-regular fa-envelope"></i> 通知オン
                     </span>
@@ -724,7 +775,11 @@
     };
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+    root.render(
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    );
   </script>
 </body>
 </html>
