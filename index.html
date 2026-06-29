@@ -68,16 +68,25 @@
         loadTodosFromSpreadsheet();
       }, [gasUrl]);
 
+      // --- 新機能：バックグラウンド自動同期 (15秒ごとにスプレッドシートを確認) ---
+      useEffect(() => {
+        if (!gasUrl) return;
+        const syncTimer = setInterval(() => {
+          loadTodosFromSpreadsheet(true);
+        }, 15000);
+        return () => clearInterval(syncTimer);
+      }, [gasUrl]);
+
       // 1分ごとに現在時刻を更新（期限切れバッジ判定用）
       useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 60000);
         return () => clearInterval(timer);
       }, []);
 
-      // スプレッドシート（GAS）からデータを読み込む関数 (JSONP方式 + タイムアウト処理追加)
-      const loadTodosFromSpreadsheet = () => {
+      // スプレッドシート（GAS）からデータを読み込む関数 (オートリフレッシュ対応)
+      const loadTodosFromSpreadsheet = (isBackground = false) => {
         if (!gasUrl) return;
-        setIsLoading(true);
+        if (!isBackground) setIsLoading(true);
         
         const callbackName = 'gasCallback_' + Date.now();
         let timeoutId;
@@ -86,10 +95,18 @@
         window[callbackName] = (data) => {
           clearTimeout(timeoutId);
           if (Array.isArray(data)) {
-            setTodos(data);
-            localStorage.setItem('todos', JSON.stringify(data));
+            setTodos((prevTodos) => {
+              const currentTodosStr = JSON.stringify(prevTodos);
+              const newTodosStr = JSON.stringify(data);
+              // データに変化がある場合のみ更新 (画面のチラつきと消失を防ぐ)
+              if (currentTodosStr !== newTodosStr) {
+                localStorage.setItem('todos', newTodosStr);
+                return data;
+              }
+              return prevTodos;
+            });
           }
-          setIsLoading(false);
+          if (!isBackground) setIsLoading(false);
           delete window[callbackName];
           const scriptEl = document.getElementById(callbackName);
           if (scriptEl) scriptEl.remove();
@@ -99,24 +116,29 @@
         const script = document.createElement('script');
         script.id = callbackName;
         const separator = gasUrl.includes('?') ? '&' : '?';
-        script.src = `${gasUrl}${separator}callback=${callbackName}`;
+        // キャッシュを防いで常に最新を取得する
+        script.src = `${gasUrl}${separator}callback=${callbackName}&_=${Date.now()}`;
         
         script.onerror = () => {
           clearTimeout(timeoutId);
-          console.error('スプレッドシートからの読み込みに失敗しました');
-          setIsLoading(false);
+          if (!isBackground) {
+            console.error('スプレッドシートからの読み込みに失敗しました');
+            alert('データの読み込みに失敗しました。連携URLが正しいか確認してください。');
+          }
+          if (!isBackground) setIsLoading(false);
           delete window[callbackName];
           script.remove();
-          alert('データの読み込みに失敗しました。連携URLが正しいか確認してください。');
         };
 
         // タイムアウト処理 (10秒)
         timeoutId = setTimeout(() => {
-          console.error('読み込みがタイムアウトしました');
-          setIsLoading(false);
+          if (!isBackground) {
+            console.error('読み込みがタイムアウトしました');
+            alert('読み込みに時間がかかっています。\nGASエディタで「新しいデプロイ」が正しく行われているか確認してください。');
+          }
+          if (!isBackground) setIsLoading(false);
           delete window[callbackName];
           if (script.parentNode) script.remove();
-          alert('読み込みに時間がかかっています。\nGASエディタで「新しいデプロイ」が正しく行われているか確認してください。');
         }, 10000);
         
         document.body.appendChild(script);
@@ -141,79 +163,6 @@
       const resetForm = () => {
         setNewType('todo'); setNewTitle(''); setNewDescription(''); setNewDueDate(''); setNewEndDate(''); 
         setNewImage(null); setNewColor('blue'); setNewPriority('中'); setNewMailNotify(false); setEditingTodo(null);
-      };
-
-      // --- CSVインポート（復元）機能 ---
-      const handleCSVImport = (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-          const text = event.target.result;
-          
-          // CSVを解析するヘルパー関数（ダブルクォーテーション対応）
-          const parseCSV = (str) => {
-            const result = [];
-            let row = [];
-            let inQuotes = false;
-            let field = '';
-            for (let i = 0; i < str.length; i++) {
-              let char = str[i];
-              if (inQuotes) {
-                if (char === '"') {
-                  if (str[i + 1] === '"') { field += '"'; i++; }
-                  else { inQuotes = false; }
-                } else { field += char; }
-              } else {
-                if (char === '"') { inQuotes = true; }
-                else if (char === ',') { row.push(field); field = ''; }
-                else if (char === '\n') { row.push(field); result.push(row); row = []; field = ''; }
-                else if (char !== '\r') { field += char; }
-              }
-            }
-            if (field !== '') row.push(field);
-            if (row.length > 0) result.push(row);
-            return result;
-          };
-
-          const rows = parseCSV(text);
-          if (rows.length <= 1) {
-            alert('有効なデータが見つかりませんでした。');
-            e.target.value = '';
-            return;
-          }
-
-          const importedTodos = [];
-          // 1行目はヘッダーなので2行目から読み込む
-          for (let i = 1; i < rows.length; i++) {
-            const cols = rows[i];
-            if (!cols[0]) continue; // IDがない行はスキップ
-
-            importedTodos.push({
-              id: Number(cols[0]),
-              type: cols[1] === 'メモ' ? 'memo' : 'todo',
-              title: cols[2] || '',
-              description: cols[3] || '',
-              priority: cols[4] || '中',
-              dueDate: cols[5] && cols[5] !== '期限なし' ? cols[5] : null,
-              endDate: cols[6] || null,
-              color: cols[7] || 'blue',
-              completed: cols[8] === '完了',
-              mailNotify: cols[9] === '希望する'
-            });
-          }
-
-          if (window.confirm(`CSVファイルから ${importedTodos.length} 件のデータを復元します。\n現在のアプリ内のデータとスプレッドシートのデータは上書きされますがよろしいですか？`)) {
-            setTodos(importedTodos);
-            localStorage.setItem('todos', JSON.stringify(importedTodos));
-            alert('データのインポートが完了しました。クラウド（GAS）に同期します。');
-            setCurrentView('list');
-            await exportToSpreadsheet(importedTodos);
-          }
-          e.target.value = ''; // ファイル選択のリセット
-        };
-        reader.readAsText(file);
       };
 
       // GASへのエクスポート (リアルタイム即時反映版)
@@ -724,19 +673,22 @@
                     </div>
                     <button onClick={() => saveGasUrl(gasUrl)} className="w-full py-4.5 bg-[#98C4A6] text-white font-black rounded-2xl shadow-xl shadow-[#98C4A6]/20 transition-all active:scale-95">設定を保存</button>
                     
-                    {/* CSVインポートセクションの追加 */}
+                    {/* データレスキューセクション (CSVインポートの代わりに設置) */}
                     <div className="mt-8 pt-6 border-t-2 border-gray-100">
                       <h3 className="text-sm font-black text-slate-700 mb-2 flex items-center gap-2">
-                        <i className="fa-solid fa-file-import text-blue-500"></i> 万が一のデータ復元
+                        <i className="fa-solid fa-life-ring text-blue-500"></i> 万が一のデータ復元（レスキュー）
                       </h3>
                       <p className="text-[10px] text-gray-500 mb-4 leading-relaxed font-bold">
-                        Googleドライブ（TODO管理アプリ_データ フォルダ）に自動保存されているバックアップファイル（CSV）を選択すると、過去のデータに復元できます。
+                        クラウド（スプレッドシート）上のデータが突然消えてしまった場合、現在この端末の画面に残っているデータをクラウドへ強制的に上書きして復旧させます。
                       </p>
-                      <label className="cursor-pointer flex items-center justify-center w-full py-4 bg-white border-2 border-blue-400 text-blue-500 font-black rounded-2xl hover:bg-blue-50 transition-all active:scale-95 shadow-sm">
-                        <i className="fa-solid fa-folder-open mr-2 text-lg"></i> CSVからデータを復元
-                        {/* 修正箇所：accept属性にスマホOSが認識しやすいMIMEタイプを追加しました */}
-                        <input type="file" accept=".csv, text/csv, application/csv, text/plain, application/vnd.ms-excel" className="hidden" onChange={handleCSVImport} />
-                      </label>
+                      <button type="button" onClick={async () => {
+                        if (window.confirm('現在の端末のデータでクラウド（スプレッドシート）を上書き復旧します。よろしいですか？')) {
+                          await exportToSpreadsheet(todos);
+                          alert('強制上書きが完了しました。');
+                        }
+                      }} className="flex items-center justify-center w-full py-4 bg-white border-2 border-blue-400 text-blue-500 font-black rounded-2xl hover:bg-blue-50 transition-all active:scale-95 shadow-sm">
+                        <i className="fa-solid fa-cloud-arrow-up mr-2 text-lg"></i> 端末のデータでクラウドを復旧
+                      </button>
                     </div>
                   </div>
                 </div>
