@@ -1,314 +1,727 @@
-/**
- * TODO管理アプリ用 バックエンドプログラム (双方向同期・自動カレンダー＆メール対応・JSONP対応・超堅牢版)
- */
-
-function doGet(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const data = sheet.getDataRange().getValues();
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TODO管理 - リマインダー＆カレンダー強化版</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   
-  const callback = e.parameter.callback;
-  let resultJSON = "[]";
+  <!-- 最も安定しているReactとBabelのバージョンを厳選 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
+  
+  <style>
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideInRight { from { transform: translateX(2rem); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes bouncePulse { 
+      0%, 100% { transform: scale(1); } 
+      50% { transform: scale(1.02); } 
+    }
+    .animate-in { animation-duration: 400ms; animation-fill-mode: both; }
+    .fade-in { animation-name: fadeIn; }
+    .slide-in-from-right-8 { animation-name: slideInRight; }
+    .animate-bounce-pulse { animation: bouncePulse 2s infinite; }
+    body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; background-color: #f7f5f0; color: #334155; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    input[type="datetime-local"] { -webkit-appearance: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
 
-  if (data.length > 1) {
-    const headers = data[0];
-    const idCol = headers.indexOf('ID');
-    const typeCol = headers.indexOf('種類');
-    const titleCol = headers.indexOf('タスク名');
-    const descCol = headers.indexOf('詳細');
-    const priorityCol = headers.indexOf('優先度');
-    const dateCol = headers.indexOf('開始日時');
-    const endDateCol = headers.indexOf('終了日時');
-    const colorCol = headers.indexOf('カラー');
-    const statusCol = headers.indexOf('ステータス');
-    const mailNotifyCol = headers.indexOf('メール通知');
+  <script type="text/babel">
+    const { useState, useEffect } = React;
 
-    const todos = [];
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      if (!row[idCol]) continue;
+    const App = () => {
+      const [currentTime, setCurrentTime] = useState(new Date());
+      const [currentView, setCurrentView] = useState('list'); // 起動時はタスク一覧を初期表示
+      const [isLoading, setIsLoading] = useState(false);
+      const [isSyncing, setIsSyncing] = useState(false);
+      const [syncError, setSyncError] = useState(false); // 同期エラー表示フラグ
       
-      todos.push({
-        id: Number(row[idCol]),
-        type: row[typeCol] === 'メモ' ? 'memo' : 'todo',
-        title: String(row[titleCol]),
-        description: String(row[descCol] || ''),
-        priority: String(row[priorityCol] || '中'),
-        dueDate: row[dateCol] && row[dateCol] !== '期限なし' ? formatDateToISO(row[dateCol]) : null,
-        endDate: row[endDateCol] ? formatDateToISO(row[endDateCol]) : null,
-        color: String(row[colorCol] || 'blue'),
-        completed: row[statusCol] === '完了',
-        mailNotify: row[mailNotifyCol] === '希望する'
+      const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('gas_url') || '');
+
+      const [todos, setTodos] = useState(() => {
+        const saved = localStorage.getItem('todos');
+        return saved ? JSON.parse(saved) : [];
       });
-    }
-    resultJSON = JSON.stringify(todos);
-  }
 
-  if (callback) {
-    return ContentService.createTextOutput(callback + '(' + resultJSON + ');')
-      .setMimeType(ContentService.MimeType.JAVASCRIPT);
-  } else {
-    return ContentService.createTextOutput(resultJSON)
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-}
+      // フォーム用のステート
+      const [editingTodo, setEditingTodo] = useState(null);
+      const [newType, setNewType] = useState('todo'); // 'todo' または 'memo'
+      const [newTitle, setNewTitle] = useState('');
+      const [newDescription, setNewDescription] = useState(''); 
+      const [newDueDate, setNewDueDate] = useState('');
+      const [newEndDate, setNewEndDate] = useState('');
+      const [newImage, setNewImage] = useState(null);
+      const [newColor, setNewColor] = useState('blue');
+      const [newPriority, setNewPriority] = useState('中');
+      const [newMailNotify, setNewMailNotify] = useState(false);
 
-function formatDateToISO(dateVal) {
-  if (dateVal instanceof Date) {
-    return Utilities.formatDate(dateVal, "Asia/Tokyo", "yyyy-MM-dd'T'HH:mm");
-  }
-  return dateVal;
-}
+      // アプリ起動時に最新データを静かに読み込む
+      useEffect(() => {
+        loadTodosFromSpreadsheet(true);
+      }, [gasUrl]);
 
-function doPost(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  
-  let data;
-  try {
-    data = JSON.parse(e.postData.contents);
-  } catch (error) {
-    return ContentService.createTextOutput("Error: データの解析に失敗しました。");
-  }
+      // 30秒ごとにバックグラウンドで静かに同期（画面を邪魔しない）
+      useEffect(() => {
+        if (!gasUrl) return;
+        const syncTimer = setInterval(() => {
+          loadTodosFromSpreadsheet(true);
+        }, 30000);
+        return () => clearInterval(syncTimer);
+      }, [gasUrl]);
 
-  if (!data || data.length === 0) {
-    return ContentService.createTextOutput("No data to update.");
-  }
-  
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['ID', '種類', 'タスク名', '詳細', '優先度', '開始日時', '終了日時', 'カラー', 'ステータス', 'メール通知', 'カレンダー連携']);
-  }
-  
-  const calendar = CalendarApp.getDefaultCalendar();
-  
-  const lastRow = sheet.getLastRow();
-  let existingValues = [];
-  if (lastRow > 1) {
-    existingValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  }
-  const idRowMap = {};
-  for (let i = 0; i < existingValues.length; i++) {
-    const idVal = existingValues[i][0];
-    if (idVal) {
-      idRowMap[idVal.toString()] = i + 2; 
-    }
-  }
+      // 1分ごとに現在時刻を更新
+      useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date()), 60000);
+        return () => clearInterval(timer);
+      }, []);
 
-  data.forEach(function(todo) {
-    let calendarStatus = "対象外";
-    
-    // 完了ステータスの解釈を文字列・真偽値の両方に対応（超堅牢化）
-    const isCompleted = todo.completed === true || todo.completed === '完了';
-    
-    if (todo.dueDate && todo.dueDate !== '期限なし') {
-      try {
-        const startDate = new Date(todo.dueDate);
+      // スプレッドシート（GAS）からデータを安全に読み込む関数 (JSONP)
+      const loadTodosFromSpreadsheet = (isSilent = false) => {
+        if (!gasUrl) return;
+        if (!isSilent) setIsLoading(true);
         
-        let endDate;
-        if (todo.endDate && todo.endDate !== '') {
-          endDate = new Date(todo.endDate);
-          if (endDate <= startDate) {
-            endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+        const callbackName = 'gasCallback_' + Date.now();
+        let isResponded = false;
+        
+        // データの受け取り用のグローバル関数を設定
+        window[callbackName] = (data) => {
+          isResponded = true;
+          setSyncError(false);
+          if (Array.isArray(data)) {
+            setTodos((prevTodos) => {
+              const prevStr = JSON.stringify(prevTodos);
+              const nextStr = JSON.stringify(data);
+              if (prevStr !== nextStr) {
+                localStorage.setItem('todos', nextStr);
+                return data;
+              }
+              return prevTodos;
+            });
           }
-        } else {
-          endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
-        }
+          if (!isSilent) setIsLoading(false);
+          cleanup();
+        };
+
+        const cleanup = () => {
+          delete window[callbackName];
+          const scriptEl = document.getElementById(callbackName);
+          if (scriptEl) scriptEl.remove();
+        };
+
+        // スクリプトタグを生成して安全に通信
+        const script = document.createElement('script');
+        script.id = callbackName;
+        const separator = gasUrl.includes('?') ? '&' : '?';
+        // キャッシュを強制的に回避するタイムスタンプを付与
+        script.src = `${gasUrl}${separator}callback=${callbackName}&_=${Date.now()}`;
         
+        script.onerror = () => {
+          isResponded = true;
+          setSyncError(true); // エラーでもポップアップは出さず、ステータスのみ変更
+          if (!isSilent) setIsLoading(false);
+          cleanup();
+        };
+
+        // 8秒で通信がなければタイムアウトとし、アプリの操作を絶対に止めない
+        setTimeout(() => {
+          if (!isResponded) {
+            setSyncError(true);
+            if (!isSilent) setIsLoading(false);
+            cleanup();
+          }
+        }, 8000);
+        
+        document.body.appendChild(script);
+      };
+
+      const saveGasUrl = (url) => {
+        setGasUrl(url.trim());
+        localStorage.setItem('gas_url', url.trim());
+        alert('連携URLを保存しました。');
+        setCurrentView('list');
+      };
+
+      const handleImageChange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onloadend = () => { setNewImage(reader.result); };
+          reader.readAsDataURL(file);
+        }
+      };
+
+      const resetForm = () => {
+        setNewType('todo'); setNewTitle(''); setNewDescription(''); setNewDueDate(''); setNewEndDate(''); 
+        setNewImage(null); setNewColor('blue'); setNewPriority('中'); setNewMailNotify(false); setEditingTodo(null);
+      };
+
+      // GASへのエクスポート (保存時に自動同期)
+      const exportToSpreadsheet = async (currentTodos) => {
+        if (!gasUrl) return;
+        setIsSyncing(true);
+        setSyncError(false);
+        try {
+          const exportData = currentTodos.map(t => ({ 
+            id: t.id, 
+            type: t.type || 'todo', 
+            title: t.title, 
+            description: t.description || '', 
+            priority: t.priority || '中',
+            dueDate: t.dueDate || '期限なし', 
+            endDate: t.endDate || '', 
+            color: t.color || 'blue',
+            mailNotify: t.mailNotify ? '希望する' : '希望しない',
+            completed: t.completed ? '完了' : '未完了' 
+          }));
+          await fetch(gasUrl, { 
+            method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exportData) 
+          });
+        } catch (error) {
+          console.error('同期エラー:', error);
+          setSyncError(true);
+        } finally {
+          setIsSyncing(false);
+        }
+      };
+
+      // タスクの追加
+      const addTodo = async (e) => {
+        e.preventDefault();
+        if (!newTitle.trim()) return;
+        const newTodo = { 
+          id: Date.now(), 
+          type: newType, 
+          title: newTitle.trim(), 
+          description: newDescription.trim(),
+          dueDate: newDueDate || null, 
+          endDate: newEndDate || null,
+          color: newColor, 
+          priority: newPriority,
+          mailNotify: newMailNotify, 
+          completed: false, 
+          imageUrl: newImage 
+        };
+        const updatedTodos = [...todos, newTodo];
+        setTodos(updatedTodos);
+        localStorage.setItem('todos', JSON.stringify(updatedTodos));
+        resetForm();
+        setCurrentView('list');
+        await exportToSpreadsheet(updatedTodos);
+      };
+
+      // タスクの修正
+      const updateTodo = async (e) => {
+        e.preventDefault();
+        if (!newTitle.trim() || !editingTodo) return;
+        
+        const updatedTodo = {
+          ...editingTodo,
+          type: newType,
+          title: newTitle.trim(),
+          description: newDescription.trim(),
+          dueDate: newDueDate || null,
+          endDate: newEndDate || null,
+          color: newColor,
+          priority: newPriority,
+          mailNotify: newMailNotify,
+          imageUrl: newImage
+        };
+        
+        const updatedTodos = todos.map(t => t.id === editingTodo.id ? updatedTodo : t);
+        setTodos(updatedTodos);
+        localStorage.setItem('todos', JSON.stringify(updatedTodos));
+        const viewToReturn = updatedTodo.completed ? 'history' : (updatedTodo.type === 'memo' ? 'memo' : 'list');
+        resetForm();
+        setCurrentView(viewToReturn);
+        await exportToSpreadsheet(updatedTodos);
+      };
+
+      // 編集画面を開く
+      const startEdit = (todo) => {
+        setEditingTodo(todo);
+        setNewType(todo.type || 'todo');
+        setNewTitle(todo.title);
+        setNewDescription(todo.description || '');
+        setNewDueDate(todo.dueDate || '');
+        setNewEndDate(todo.endDate || '');
+        setNewColor(todo.color || 'blue');
+        setNewPriority(todo.priority || '中');
+        setNewMailNotify(todo.mailNotify || false);
+        setNewImage(todo.imageUrl || null);
+        setCurrentView('edit');
+      };
+
+      const deleteTodo = async (id) => {
+        if (window.confirm('完全に削除してもよろしいですか？')) {
+          const updatedTodos = todos.filter(todo => todo.id !== id);
+          setTodos(updatedTodos);
+          localStorage.setItem('todos', JSON.stringify(updatedTodos));
+          await exportToSpreadsheet(updatedTodos);
+        }
+      };
+
+      const toggleComplete = async (id) => {
+        const updatedTodos = todos.map(todo => todo.id === id ? { ...todo, completed: !todo.completed } : todo);
+        setTodos(updatedTodos);
+        localStorage.setItem('todos', JSON.stringify(updatedTodos));
+        await exportToSpreadsheet(updatedTodos);
+      };
+
+      const getGoogleCalendarUrl = (todo) => {
+        const prefix = todo.type === 'memo' ? '📝メモ' : 'TODO';
+        const text = encodeURIComponent(`【${todo.priority || '中'}】${prefix}: ${todo.title}`);
+        const details = encodeURIComponent(todo.description || '');
+        let dates = '';
+        if (todo.dueDate) {
+          const startDate = new Date(todo.dueDate);
+          if (!isNaN(startDate.getTime())) {
+            let endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
+            if (todo.endDate) {
+              const parsedEnd = new Date(todo.endDate);
+              if (!isNaN(parsedEnd.getTime())) endDate = parsedEnd;
+            }
+            const format = (date) => date.toISOString().replace(/-|:|\.\d\d\d/g, '');
+            dates = `&dates=${format(startDate)}/${format(endDate)}`;
+          }
+        }
+        return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&details=${details}${dates}`;
+      };
+
+      const activeTodos = todos.filter(todo => !todo.completed && (todo.type === 'todo' || !todo.type));
+      const activeMemos = todos.filter(todo => !todo.completed && todo.type === 'memo');
+      const completedTodos = todos.filter(todo => todo.completed).sort((a, b) => b.id - a.id);
+
+      // 期限切れタスクの抽出 (安全設計)
+      const expiredTodos = activeTodos.filter(todo => {
+        if (!todo.dueDate) return false;
+        const d = new Date(todo.dueDate);
+        return !isNaN(d.getTime()) && d < currentTime;
+      });
+
+      const sortFunction = (a, b) => {
+        const pOrder = { '高': 1, '中': 2, '低': 3 };
+        const pA = pOrder[a.priority] || 2;
+        const pB = pOrder[b.priority] || 2;
+        if (pA !== pB) return pA - pB;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        const timeA = new Date(a.dueDate).getTime();
+        const timeB = new Date(b.dueDate).getTime();
+        return (isNaN(timeA) ? Infinity : timeA) - (isNaN(timeB) ? Infinity : timeB);
+      };
+
+      const getAlertBadge = (dueDate) => {
+        if (!dueDate) return null;
+        const due = new Date(dueDate);
+        if (isNaN(due.getTime())) return null;
+        const diffHours = (due - currentTime) / (1000 * 60 * 60);
+        
+        if (diffHours < 0) return { label: '⚠️ 期限切れ！', classes: 'bg-red-600 text-white border-red-700 font-black animate-pulse shadow-lg' };
+        if (diffHours <= 3) return { label: '🔥 あと3時間以内！', classes: 'bg-red-500 text-white border-red-600 animate-pulse shadow-md' };
+        if (diffHours <= 48) return { label: '🚨 あと2日以内', classes: 'bg-orange-500 text-white border-orange-600 shadow-sm' };
+        if (diffHours <= 168) return { label: '🔔 あと1週間以内', classes: 'bg-orange-100 text-orange-800 border-orange-300 font-bold' };
+        return null;
+      };
+
+      const TodoItem = ({ todo }) => {
+        const dueObj = new Date(todo.dueDate);
+        const isValidDate = !isNaN(dueObj.getTime());
+        
+        const isExpired = !todo.completed && todo.dueDate && isValidDate && dueObj < currentTime;
+        const alertBadge = !todo.completed && isValidDate ? getAlertBadge(todo.dueDate) : null;
+        
+        let borderColorClass = 'border-gray-100';
+        let iconColorClass = 'text-gray-400';
+        let bgClass = 'bg-white';
+        let titleColorClass = 'text-slate-700';
+        
+        if (todo.completed) {
+          bgClass = 'bg-gray-50 opacity-70';
+          titleColorClass = 'line-through text-gray-400';
+        } else if (isExpired) {
+          bgClass = 'bg-red-50';
+          borderColorClass = 'border-2 border-red-500 shadow-md animate-bounce-pulse'; 
+          iconColorClass = 'text-red-600';
+          titleColorClass = 'text-red-800 font-black';
+        } else {
+          if (todo.color === 'green') { borderColorClass = 'border-l-4 border-l-green-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-green-500'; }
+          else if (todo.color === 'yellow') { borderColorClass = 'border-l-4 border-l-yellow-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-yellow-500'; }
+          else if (todo.color === 'purple') { borderColorClass = 'border-l-4 border-l-purple-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-purple-500'; }
+          else if (todo.color === 'orange') { borderColorClass = 'border-l-4 border-l-[#f28b82] border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-[#f28b82]'; }
+          else { borderColorClass = 'border-l-4 border-l-blue-400 border-y-gray-100 border-r-gray-100'; iconColorClass = 'text-blue-500'; }
+        }
+
+        const priorityColors = {
+          '高': 'bg-red-50 text-red-600 border-red-200',
+          '中': 'bg-yellow-50 text-yellow-600 border-yellow-200',
+          '低': 'bg-blue-50 text-blue-600 border-blue-200'
+        };
+
         const isMemo = todo.type === 'memo';
-        const typeMark = isMemo ? '📝メモ' : 'TODO';
-        const priorityMark = todo.priority ? `【${todo.priority}】` : '【中】';
-        const activeTitle = `${typeMark}: ${priorityMark}${todo.title}`;
-        const doneTitle = `✅完了: ${todo.title}`;
-        const description = todo.description || "";
-        
-        let eventColor = null;
-        if (todo.color === 'green') eventColor = CalendarApp.EventColor.PALE_GREEN;
-        else if (todo.color === 'yellow') eventColor = CalendarApp.EventColor.YELLOW;
-        else if (todo.color === 'purple') eventColor = CalendarApp.EventColor.MAUVE;
-        else if (todo.color === 'orange') eventColor = CalendarApp.EventColor.PALE_RED;
-        else eventColor = CalendarApp.EventColor.PALE_BLUE;
-        
-        const events = calendar.getEvents(startDate, endDate);
-        let targetEvent = null;
-        
-        for (let i = 0; i < events.length; i++) {
-          const t = events[i].getTitle();
-          if (t.includes(todo.title)) {
-            targetEvent = events[i];
-            break;
-          }
-        }
 
-        if (isCompleted) {
-          if (targetEvent) {
-            targetEvent.setTitle(doneTitle);
-            targetEvent.setDescription(description);
-            calendarStatus = "完了更新済";
-          }
-        } else {
-          if (!targetEvent) {
-            const newEvent = calendar.createEvent(activeTitle, startDate, endDate);
-            newEvent.setDescription(description);
-            if (eventColor) newEvent.setColor(eventColor);
-            calendarStatus = "新規登録済";
-          } else {
-            targetEvent.setTitle(activeTitle);
-            targetEvent.setTime(startDate, endDate);
-            targetEvent.setDescription(description);
-            if (eventColor) targetEvent.setColor(eventColor);
-            calendarStatus = "同期済";
-          }
-        }
-      } catch (err) {
-        calendarStatus = "エラー: " + err.message;
-      }
-    }
-    
-    const rowData = [
-      todo.id, 
-      todo.type === 'memo' ? 'メモ' : 'TODO',
-      todo.title, 
-      todo.description || '', 
-      todo.priority || '中',
-      todo.dueDate, 
-      todo.endDate || '', 
-      todo.color || 'blue', 
-      isCompleted ? '完了' : '未完了', 
-      todo.mailNotify ? '希望する' : '希望しない',
-      calendarStatus
-    ];
+        return (
+          <div className={`p-4 mb-4 rounded-2xl shadow-sm transition-all ${bgClass} ${borderColorClass}`}>
+            
+            {alertBadge && (
+              <div className="mb-3">
+                <span className={`text-xs px-3 py-1.5 rounded-lg border inline-block ${alertBadge.classes}`}>
+                  {alertBadge.label}
+                </span>
+              </div>
+            )}
 
-    const bgColor = isCompleted ? '#fce4ec' : '#ffffff';
-    const bgRow = new Array(rowData.length).fill(bgColor);
+            <div className="flex items-start justify-between gap-3">
+              <button onClick={() => toggleComplete(todo.id)} className={`mt-1 flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-all ${todo.completed ? 'bg-[#98C4A6] text-white shadow-inner' : 'border-2 border-gray-300 hover:border-gray-500 bg-white'}`}>
+                {todo.completed && <i className="fa-solid fa-check text-xs"></i>}
+              </button>
+              
+              <div className="flex flex-col flex-1 min-w-0">
+                <span className={`text-[17px] tracking-tight truncate ${titleColorClass}`}>
+                  {isMemo && <i className="fa-solid fa-note-sticky text-orange-400 mr-1.5"></i>}
+                  {todo.title}
+                </span>
+                
+                {todo.description && (
+                  <p className={`mt-1 text-sm leading-relaxed whitespace-pre-wrap ${todo.completed ? 'text-gray-300' : (isExpired ? 'text-red-600 font-bold' : 'text-gray-500')}`}>
+                    {todo.description}
+                  </p>
+                )}
 
-    try {
-      const todoIdStr = todo.id.toString();
-      if (idRowMap[todoIdStr]) {
-        const rowNum = idRowMap[todoIdStr];
-        const range = sheet.getRange(rowNum, 1, 1, rowData.length);
-        range.setValues([rowData]);
-        range.setBackgrounds([bgRow]);
-      } else {
-        sheet.appendRow(rowData);
-        const newRowNum = sheet.getLastRow();
-        const range = sheet.getRange(newRowNum, 1, 1, rowData.length);
-        range.setBackgrounds([bgRow]);
-        idRowMap[todoIdStr] = newRowNum;
-      }
-    } catch (err) {
-      sheet.appendRow(['エラー', '書き込み失敗', err.message, '', '', '', '', '', '', '', '']);
-    }
-  });
-  
-  try {
-    organizeDriveFiles(sheet);
-  } catch (err) {
-    console.error("ドライブ整理エラー: " + err);
-  }
-  
-  return ContentService.createTextOutput("Success");
-}
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  <span className={`text-[10px] px-2.5 py-1 rounded-md font-black border ${priorityColors[todo.priority || '中']}`}>
+                    {todo.priority || '中'}
+                  </span>
+                  
+                  {todo.dueDate && (
+                    <span className={`text-xs font-bold flex items-center gap-1.5 ml-1 ${isExpired ? 'text-red-700' : 'text-gray-500'}`}>
+                      <i className={`fa-solid fa-clock text-[10px] ${iconColorClass}`}></i>
+                      {isValidDate ? dueObj.toLocaleString('ja-JP', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : String(todo.dueDate)}
+                    </span>
+                  )}
 
-function organizeDriveFiles(sheet) {
-  const folderName = "TODO管理アプリ_データ";
-  let folder;
-  
-  const folders = DriveApp.getFoldersByName(folderName);
-  if (folders.hasNext()) {
-    folder = folders.next();
-  } else {
-    folder = DriveApp.createFolder(folderName);
-  }
-  
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const file = DriveApp.getFileById(ss.getId());
-  
-  let inFolder = false;
-  const parents = file.getParents();
-  while (parents.hasNext()) {
-    if (parents.next().getId() === folder.getId()) {
-      inFolder = true;
-      break;
-    }
-  }
-  
-  if (!inFolder) {
-    file.moveTo(folder);
-  }
-  
-  const now = new Date();
-  const formattedDate = Utilities.formatDate(now, "Asia/Tokyo", "yyyy-MM-dd_HH-mm-ss");
-  const csvFileName = "TODOリスト_バックアップ_" + formattedDate + ".csv";
-  
-  let csvContent = "";
-  const data = sheet.getDataRange().getValues();
-  
-  data.forEach(function(row) {
-    const rowString = row.map(function(cell) {
-      const cellStr = String(cell).replace(/"/g, '""');
-      return `"${cellStr}"`;
-    }).join(",");
-    csvContent += rowString + "\r\n";
-  });
-  
-  folder.createFile(csvFileName, csvContent, MimeType.CSV);
-}
+                  {todo.mailNotify && !todo.completed && (
+                    <span className="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-md font-bold flex items-center gap-1">
+                      <i className="fa-regular fa-envelope"></i> 通知オン
+                    </span>
+                  )}
+                </div>
+              </div>
+              
+              <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                <div className="flex gap-2">
+                  <button onClick={() => startEdit(todo)} className="text-gray-400 hover:text-blue-500 transition-colors bg-gray-50 p-2 rounded-lg" title="修正・編集">
+                    <i className="fa-solid fa-pen text-sm"></i>
+                  </button>
+                  <button onClick={() => deleteTodo(todo.id)} className="text-gray-400 hover:text-red-500 transition-colors bg-gray-50 p-2 rounded-lg" title="削除">
+                    <i className="fa-solid fa-trash-can text-sm"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
 
-function checkAndSendReminders() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return;
+            {!todo.completed && todo.dueDate && (
+              <div className="mt-4 pt-3 border-t border-gray-100 flex gap-2">
+                 <a href={getGoogleCalendarUrl(todo)} target="_blank" rel="noopener noreferrer" 
+                    className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-bold rounded-xl border border-blue-200 text-xs transition-all active:scale-95">
+                   <i className="fa-brands fa-google"></i> 手動カレンダー追加
+                 </a>
+                 <div className="flex-1 flex items-center justify-center gap-1 text-slate-400 border border-gray-200 rounded-xl bg-gray-50 text-[11px] font-bold">
+                   <i className="fa-solid fa-cloud-arrow-up text-green-400"></i> カレンダー自動同期
+                 </div>
+              </div>
+            )}
 
-  const headers = data[0];
-  const statusCol = headers.indexOf('ステータス');
-  const mailNotifyCol = headers.indexOf('メール通知');
-  const dateCol = headers.indexOf('開始日時');
-  const titleCol = headers.indexOf('タスク名');
-  const descCol = headers.indexOf('詳細');
+            {todo.imageUrl && (
+              <div className="mt-4">
+                <img src={todo.imageUrl} alt="添付" className="max-h-48 w-full object-cover rounded-xl border border-gray-100 shadow-sm" />
+              </div>
+            )}
+          </div>
+        );
+      };
 
-  if (statusCol === -1 || mailNotifyCol === -1 || dateCol === -1) {
-    console.log("必要な列が見つかりません。");
-    return;
-  }
+      const renderTodoForm = (onSubmit, submitLabel, isEdit) => (
+        <form onSubmit={onSubmit} className="flex flex-col gap-5">
+          <div className="flex bg-gray-100 p-1 rounded-xl mb-2">
+            <button type="button" onClick={() => setNewType('todo')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-black text-sm transition-all ${newType === 'todo' ? 'bg-white shadow-sm text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+              <i className="fa-solid fa-bolt text-yellow-500"></i> TODO
+            </button>
+            <button type="button" onClick={() => setNewType('memo')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-black text-sm transition-all ${newType === 'memo' ? 'bg-white shadow-sm text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+              <i className="fa-solid fa-note-sticky text-orange-400"></i> 記憶・メモ
+            </button>
+          </div>
 
-  const userEmail = Session.getActiveUser().getEmail();
-  const now = new Date();
+          <div className="space-y-4">
+            <input 
+              type="text" 
+              placeholder={newType === 'memo' ? "記憶したいことを入力..." : "タスクを入力..."} 
+              value={newTitle} 
+              onChange={(e) => setNewTitle(e.target.value)} 
+              className="w-full px-4 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none font-black text-xl text-gray-900 placeholder-gray-500 transition-all shadow-sm" 
+            />
+            <textarea 
+              placeholder="詳細・メモを入力してください..." 
+              value={newDescription} 
+              onChange={(e) => setNewDescription(e.target.value)} 
+              rows="3" 
+              className="w-full px-4 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none font-bold text-sm text-gray-900 placeholder-gray-500 resize-none transition-all shadow-sm" 
+            />
+          </div>
 
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const status = row[statusCol];
-    const mailNotify = row[mailNotifyCol];
-    const dueDateStr = row[dateCol];
+          <div className="flex flex-col gap-4 bg-white border-2 border-gray-200 p-4 rounded-2xl shadow-sm">
+            <div className="flex items-center gap-4">
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest w-12">優先度</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setNewPriority('高')} className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${newPriority === '高' ? 'bg-red-500 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-red-50 hover:text-red-400'}`}>高</button>
+                <button type="button" onClick={() => setNewPriority('中')} className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${newPriority === '中' ? 'bg-yellow-500 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-yellow-50 hover:text-yellow-500'}`}>中</button>
+                <button type="button" onClick={() => setNewPriority('低')} className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${newPriority === '低' ? 'bg-blue-500 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-blue-50 hover:text-blue-500'}`}>低</button>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest w-12">カラー</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setNewColor('blue')} className={`w-7 h-7 rounded-full bg-blue-400 transition-all ${newColor === 'blue' ? 'ring-4 ring-blue-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('green')} className={`w-7 h-7 rounded-full bg-green-400 transition-all ${newColor === 'green' ? 'ring-4 ring-green-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('yellow')} className={`w-7 h-7 rounded-full bg-yellow-400 transition-all ${newColor === 'yellow' ? 'ring-4 ring-yellow-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('purple')} className={`w-7 h-7 rounded-full bg-purple-400 transition-all ${newColor === 'purple' ? 'ring-4 ring-purple-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+                <button type="button" onClick={() => setNewColor('orange')} className={`w-7 h-7 rounded-full bg-[#f28b82] transition-all ${newColor === 'orange' ? 'ring-4 ring-red-200 scale-110' : 'opacity-40 hover:opacity-100'}`}></button>
+              </div>
+            </div>
+          </div>
 
-    if (status !== '未完了' || mailNotify !== '希望する' || !dueDateStr || dueDateStr === '期限なし') {
-      continue;
-    }
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="text-[10px] font-black text-gray-500 ml-1 mb-1 block uppercase tracking-widest">開始・期限 <span className="text-red-500">*</span></label>
+              <input type="datetime-local" value={newDueDate} onChange={(e) => setNewDueDate(e.target.value)} required={newMailNotify} className="w-full px-3 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none text-xs font-bold text-gray-900 shadow-sm" />
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] font-black text-gray-500 ml-1 mb-1 block uppercase tracking-widest">終了(任意)</label>
+              <input type="datetime-local" value={newEndDate} onChange={(e) => setNewEndDate(e.target.value)} className="w-full px-3 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none text-xs font-bold text-gray-900 shadow-sm" />
+            </div>
+          </div>
 
-    const dueDate = new Date(dueDateStr);
-    const diffHours = (dueDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+          <div className="bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl flex items-center justify-between">
+            <div>
+              <p className="text-sm font-black text-blue-800 flex items-center gap-2">
+                <i className="fa-solid fa-envelope"></i> メール通知
+              </p>
+              <p className="text-[10px] text-blue-600 mt-1">期日の2日前と3時間前にお知らせします<br/>※要GAS連携設定</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" className="sr-only peer" checked={newMailNotify} onChange={(e) => setNewMailNotify(e.target.checked)} />
+              <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+            </label>
+          </div>
 
-    if (diffHours > 47 && diffHours <= 48) {
-      sendAlertEmail(userEmail, row[titleCol], row[descCol], dueDateStr, "2日前");
-    }
-    else if (diffHours > 2 && diffHours <= 3) {
-      sendAlertEmail(userEmail, row[titleCol], row[descCol], dueDateStr, "3時間前");
-    }
-  }
-}
+          <div className="flex items-center gap-4 py-2">
+            <label className="cursor-pointer flex items-center justify-center px-5 py-2.5 bg-gray-100 text-gray-700 border-2 border-gray-200 rounded-xl font-black text-xs hover:bg-gray-200 transition-all">
+              <i className="fa-solid fa-camera mr-2"></i> 写真を追加
+              <input type="file" accept="image/*" className="hidden" onChange={handleImageChange} />
+            </label>
+            {newImage && (
+              <div className="relative inline-block">
+                <img src={newImage} alt="Preview" className="h-12 w-12 object-cover rounded-xl border-2 border-gray-200 shadow-sm" />
+                <button type="button" onClick={() => setNewImage(null)} className="absolute -top-2 -right-2 bg-slate-800 text-white rounded-full w-6 h-6 flex items-center justify-center shadow-lg active:scale-90"><i className="fa-solid fa-xmark text-xs"></i></button>
+              </div>
+            )}
+          </div>
 
-function sendAlertEmail(to, title, description, dueDateStr, timing) {
-  const formattedDate = Utilities.formatDate(new Date(dueDateStr), "Asia/Tokyo", "yyyy/MM/dd HH:mm");
-  const subject = `【リマインド】期日の${timing}です: ${title}`;
-  const body = `
-相棒、予定の${timing}になったのでお知らせします！
+          <button type="submit" disabled={!newTitle.trim()} className="w-full py-4.5 bg-slate-800 text-white font-black text-lg rounded-[2rem] shadow-xl shadow-slate-200 active:scale-95 transition-all disabled:opacity-30 mt-2">
+            {submitLabel}
+          </button>
+        </form>
+      );
 
-■ タスク名: ${title}
-■ 期日: ${formattedDate}
+      return (
+        <div className="min-h-screen py-8 px-4 text-slate-700">
+          <div className="max-w-md mx-auto pb-24">
+            
+            <div className="flex justify-between items-center mb-8">
+              <button onClick={() => {resetForm(); setCurrentView('settings');}} className="w-10 h-10 flex items-center justify-center text-gray-500 hover:text-slate-800 bg-white rounded-full shadow-sm border-2 border-gray-200 transition-all active:scale-90"><i className="fa-solid fa-gear"></i></button>
+              
+              <div className="flex flex-col items-center">
+                <h1 className="text-2xl font-black tracking-tighter flex items-center gap-2"><i className="fa-solid fa-calendar-check text-[#98C4A6]"></i> TODO管理</h1>
+                
+                {/* 同期ステータスの小さな表示 */}
+                {gasUrl && (
+                  <span className="text-[10px] mt-1 font-bold flex items-center gap-1">
+                    {isSyncing ? (
+                      <span className="text-blue-500"><i className="fa-solid fa-arrows-rotate animate-spin mr-1"></i>同期中...</span>
+                    ) : isLoading ? (
+                      <span className="text-orange-400"><i className="fa-solid fa-spinner animate-spin mr-1"></i>接続確認中...</span>
+                    ) : syncError ? (
+                      <span className="text-red-500" onClick={() => loadTodosFromSpreadsheet(false)}><i className="fa-solid fa-cloud-slash mr-1"></i>オフライン・クラウド接続未確認</span>
+                    ) : (
+                      <span className="text-green-600"><i className="fa-solid fa-cloud mr-1"></i>スプレッドシートと接続完了</span>
+                    )}
+                  </span>
+                )}
+              </div>
+              
+              {/* スプレッドシートから強制再読込ボタン */}
+              {gasUrl ? (
+                <button onClick={() => loadTodosFromSpreadsheet(false)} title="スプレッドシートから再読込" className="w-10 h-10 flex items-center justify-center text-gray-500 hover:text-slate-800 bg-white rounded-full shadow-sm border-2 border-gray-200 transition-all active:scale-90">
+                  <i className="fa-solid fa-arrows-rotate"></i>
+                </button>
+              ) : (
+                <div className="w-10"></div>
+              )}
+            </div>
 
-■ 詳細: 
-${description || 'なし'}
+            {currentView === 'input' && (
+              <div className="animate-in fade-in">
+                <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border-2 border-gray-100 mb-8">
+                  {renderTodoForm(addTodo, "リストに追加する", false)}
+                </div>
+              </div>
+            )}
 
-TODOアプリを開いて、状況を確認してくださいね。
-ゆずより
-  `;
-  
-  MailApp.sendEmail(to, subject, body);
-}
+            {currentView === 'edit' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                <button onClick={() => {resetForm(); setCurrentView(editingTodo?.type === 'memo' ? 'memo' : 'list');}} className="mb-6 flex items-center gap-3 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> キャンセル</button>
+                <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border-2 border-blue-200 mb-8 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-2 bg-blue-400"></div>
+                  <h2 className="text-center font-bold text-blue-800 mb-4 mt-2">内容を修正する</h2>
+                  {renderTodoForm(updateTodo, "変更を保存する", true)}
+                </div>
+              </div>
+            )}
+
+            {/* --- 進行中TODOリスト画面 --- */}
+            {currentView === 'list' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                
+                {/* 期限切れアラートバナー */}
+                {expiredTodos.length > 0 && (
+                  <div className="mb-6 bg-red-600 text-white p-4 rounded-2xl shadow-lg border-2 border-red-700 animate-in fade-in">
+                    <h3 className="font-black flex items-center gap-2 text-lg">
+                      <i className="fa-solid fa-triangle-exclamation animate-bounce"></i> 警告：期限切れのタスクがあります！
+                    </h3>
+                    <p className="text-sm mt-1 font-bold opacity-90">赤い枠のタスクを至急確認してください。</p>
+                  </div>
+                )}
+
+                <h2 className="text-lg font-black text-slate-700 mb-4 ml-2 flex items-center gap-2">
+                  <i className="fa-solid fa-bolt text-yellow-500"></i> 進行中のタスク
+                </h2>
+                
+                <div className="space-y-2">
+                  {activeTodos.length > 0 ? (
+                    activeTodos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
+                  ) : (
+                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">進行中のタスクはありません 🎉</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* --- 記憶・メモ画面 --- */}
+            {currentView === 'memo' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                <h2 className="text-lg font-black text-slate-700 mb-4 ml-2 flex items-center gap-2">
+                  <i className="fa-solid fa-note-sticky text-orange-400"></i> 記憶・メモ
+                </h2>
+                <div className="space-y-2">
+                  {activeMemos.length > 0 ? (
+                    activeMemos.sort(sortFunction).map(todo => <TodoItem key={todo.id} todo={todo} />)
+                  ) : (
+                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">記憶しているメモはありません 📝</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* --- 完了履歴画面 --- */}
+            {currentView === 'history' && (
+              <div className="animate-in fade-in slide-in-from-right-8">
+                <h2 className="text-lg font-black text-slate-500 mb-4 ml-2 flex items-center gap-2">
+                  <i className="fa-solid fa-box-archive text-gray-400"></i> 完了した履歴
+                </h2>
+                <div className="space-y-2">
+                  {completedTodos.length > 0 ? (
+                    completedTodos.map(todo => <TodoItem key={todo.id} todo={todo} />)
+                  ) : (
+                    <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">まだ完了した履歴はありません</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* --- 設定画面 --- */}
+            {currentView === 'settings' && (
+              <div className="animate-in fade-in">
+                <button onClick={() => setCurrentView('list')} className="mb-8 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> 戻る</button>
+                <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border-2 border-gray-100 text-center">
+                  <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <i className="fa-solid fa-gear text-2xl text-gray-400"></i>
+                  </div>
+                  <h2 className="text-xl font-black mb-8">システム設定</h2>
+                  <div className="space-y-6 text-left">
+                    <div>
+                      <label className="text-[10px] font-black text-gray-500 mb-2 block uppercase tracking-widest ml-1">GAS Web App URL</label>
+                      <input type="text" value={gasUrl} onChange={(e) => setGasUrl(e.target.value)} placeholder="https://script.google.com/..." className="w-full px-5 py-4 bg-white border-2 border-gray-400 rounded-2xl focus:border-gray-700 focus:outline-none font-bold text-gray-900 transition-all" />
+                      <p className="text-xs text-gray-500 mt-2">※メール通知を自動で送るには、GAS側で1時間おきに実行されるタイマートリガーを設定し、送信処理を記述する必要があります。</p>
+                    </div>
+                    <button onClick={() => saveGasUrl(gasUrl)} className="w-full py-4.5 bg-[#98C4A6] text-white font-black rounded-2xl shadow-xl shadow-[#98C4A6]/20 transition-all active:scale-95">設定を保存</button>
+                    
+                    {/* 強制クラウドデータ復旧（レスキュー） */}
+                    <div className="mt-8 pt-6 border-t-2 border-gray-100">
+                      <h3 className="text-sm font-black text-slate-700 mb-2 flex items-center gap-2">
+                        <i className="fa-solid fa-life-ring text-blue-500"></i> 万が一のデータ復元（レスキュー）
+                      </h3>
+                      <p className="text-[10px] text-gray-500 mb-4 leading-relaxed font-bold">
+                        クラウド（スプレッドシート）上のデータが突然消えてしまった場合、現在この端末の画面に残っているデータをクラウドへ強制的に上書きして復旧させます。
+                      </p>
+                      <button type="button" onClick={async () => {
+                        if (window.confirm('現在の端末のデータでクラウド（スプレッドシート）を上書き復旧します。よろしいですか？')) {
+                          await exportToSpreadsheet(todos);
+                          alert('強制上書きが完了しました。');
+                        }
+                      }} className="flex items-center justify-center w-full py-4 bg-white border-2 border-blue-400 text-blue-500 font-black rounded-2xl hover:bg-blue-50 transition-all active:scale-95 shadow-sm">
+                        <i className="fa-solid fa-cloud-arrow-up mr-2 text-lg"></i> 端末のデータでクラウドを復旧
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 下部固定ナビゲーションバー */}
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-100 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.02)] z-50">
+              <div className="max-w-md mx-auto flex justify-around items-center p-2">
+                <button onClick={() => {resetForm(); setCurrentView('input');}} className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'input' ? 'text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+                  <i className="fa-solid fa-plus text-xl"></i>
+                  <span className="text-[10px] font-bold">追加</span>
+                </button>
+                <button onClick={() => {resetForm(); setCurrentView('list');}} className={`relative flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'list' || currentView === 'edit' ? 'text-[#98C4A6]' : 'text-gray-400 hover:text-gray-600'}`}>
+                  {expiredTodos.length > 0 && <span className="absolute top-1 right-2 w-2.5 h-2.5 bg-red-500 rounded-full"></span>}
+                  <i className="fa-solid fa-bolt text-xl"></i>
+                  <span className="text-[10px] font-bold">TODO</span>
+                </button>
+                <button onClick={() => {resetForm(); setCurrentView('memo');}} className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'memo' ? 'text-orange-400' : 'text-gray-400 hover:text-gray-600'}`}>
+                  <i className="fa-solid fa-note-sticky text-xl"></i>
+                  <span className="text-[10px] font-bold">メモ</span>
+                </button>
+                <button onClick={() => {resetForm(); setCurrentView('history');}} className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'history' ? 'text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
+                  <i className="fa-solid fa-box-archive text-xl"></i>
+                  <span className="text-[10px] font-bold">履歴</span>
+                </button>
+              </div>
+            </div>
+            
+          </div>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
