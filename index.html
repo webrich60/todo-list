@@ -161,7 +161,7 @@
         setNewImage(null); setNewColor('blue'); setNewPriority('中'); setNewMailNotify(false); setEditingTodo(null);
       };
 
-      // GASへのエクスポート (保存時に自動同期)
+      // ★修正: GASへ送るデータ構造を、スプレッドシートの新しい列の順番通りに綺麗にフォーマットし直しました
       const exportToSpreadsheet = async (currentTodos) => {
         if (!gasUrl) return;
         setIsSyncing(true);
@@ -169,9 +169,9 @@
         try {
           const exportData = currentTodos.map(t => ({ 
             id: t.id, 
-            type: t.type || 'todo', 
-            title: t.title, 
-            description: t.description || '', 
+            type: t.type === 'memo' ? 'memo' : 'todo', // 種類
+            title: t.title,                            // タイトル (バプテスト眼科など)
+            description: t.description || '',          // 詳細 (定期検査など)
             priority: t.priority || '中',
             dueDate: t.dueDate || '期限なし', 
             endDate: t.endDate || '', 
