@@ -173,7 +173,7 @@
             dueDate: t.dueDate || '', 
             endDate: t.endDate || '', 
             color: t.color || 'blue',
-            status: t.status || '未完了', // 未完了・チェック済・完了のいずれかを正確に送信
+            status: t.status || '未完了', 
             mailNotify: t.mailNotify || false
           }));
           await fetch(gasUrl, { 
@@ -200,7 +200,7 @@
           color: newColor, 
           priority: newPriority,
           mailNotify: newMailNotify, 
-          status: '未完了', // 新規は必ず未完了
+          status: '未完了', 
           imageUrl: newImage 
         };
         const updatedTodos = [...todos, newTodo];
@@ -308,13 +308,13 @@
         return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&details=${details}${dates}`;
       };
 
-      // フィルターの条件を更新（履歴タブに行くのは「完了」のみ）
+      // フィルターの条件：「未完了」と「チェック済」は表示。「完了」のみ履歴へ。
       const activeTodos = todos.filter(todo => todo.status !== '完了' && (todo.type === 'todo' || !todo.type));
       const activeMemos = todos.filter(todo => todo.status !== '完了' && todo.type === 'memo');
       const completedTodos = todos.filter(todo => todo.status === '完了').sort((a, b) => b.id - a.id);
 
       const expiredTodos = activeTodos.filter(todo => {
-        if (!todo.dueDate || todo.status === 'チェック済') return false; // チェック済は期限切れにしない
+        if (!todo.dueDate || todo.status === 'チェック済') return false; 
         const d = new Date(todo.dueDate);
         return !isNaN(d.getTime()) && d < currentTime;
       });
@@ -679,6 +679,7 @@
               </div>
             )}
 
+            {}
             {currentView === 'settings' && (
               <div className="animate-in fade-in">
                 <button onClick={() => setCurrentView('list')} className="mb-8 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> 戻る</button>
@@ -747,224 +748,3 @@
   </script>
 </body>
 </html>
-```
-
-### 2. GASの修正 (`backend.gs`)
-今の `コード.gs` をすべて消して、以下のコードを丸ごと貼り付けて保存し、**必ず「新しいデプロイ」**をして、そのURLをアプリの設定画面に貼り付けてください。
-
-```javascript:TODO管理アプリバックエンド(GAS):backend.gs
-/**
- * TODO管理アプリ用 バックエンドプログラム
- * 新仕様: 「未完了」「チェック済」「完了」の3段階ステータス対応版
- */
-
-function doGet(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const data = sheet.getDataRange().getValues();
-  
-  const callback = e.parameter.callback;
-  let resultJSON = "[]";
-
-  if (data.length > 1) {
-    const headers = data[0];
-    const idCol = headers.indexOf('ID');
-    const typeCol = headers.indexOf('タスク名');
-    const titleCol = headers.indexOf('タイトル');
-    const descCol = headers.indexOf('詳細');
-    const priorityCol = headers.indexOf('優先度');
-    const dateCol = headers.indexOf('開始日時');
-    const endDateCol = headers.indexOf('終了日時');
-    const colorCol = headers.indexOf('カラー');
-    const statusCol = headers.indexOf('ステータス');
-    const mailNotifyCol = headers.indexOf('メール通知');
-
-    const todos = [];
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      if (!row[idCol]) continue;
-      
-      todos.push({
-        id: Number(row[idCol]),
-        type: row[typeCol] === 'メモ' ? 'memo' : 'todo',
-        title: String(row[titleCol]),
-        description: String(row[descCol] || ''),
-        priority: String(row[priorityCol] || '中'),
-        dueDate: row[dateCol] && row[dateCol] !== '期限なし' ? formatDateToISO(row[dateCol]) : null,
-        endDate: row[endDateCol] ? formatDateToISO(row[endDateCol]) : null,
-        color: String(row[colorCol] || 'blue'),
-        status: String(row[statusCol] || '未完了'), // そのまま文字列（未完了/チェック済/完了）を返す
-        mailNotify: row[mailNotifyCol] === '希望する'
-      });
-    }
-    resultJSON = JSON.stringify(todos);
-  }
-
-  if (callback) {
-    return ContentService.createTextOutput(callback + '(' + resultJSON + ');')
-      .setMimeType(ContentService.MimeType.JAVASCRIPT);
-  } else {
-    return ContentService.createTextOutput(resultJSON)
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-function formatDateToISO(dateVal) {
-  if (dateVal instanceof Date) {
-    return Utilities.formatDate(dateVal, "Asia/Tokyo", "yyyy-MM-dd'T'HH:mm");
-  }
-  return dateVal;
-}
-
-function doPost(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  
-  let data;
-  try {
-    data = JSON.parse(e.postData.contents);
-  } catch (error) {
-    return ContentService.createTextOutput("Error: データの解析に失敗しました。");
-  }
-
-  if (!data || data.length === 0) {
-    return ContentService.createTextOutput("No data to update.");
-  }
-  
-  // 完全版の11列ヘッダー生成
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['ID', 'タスク名', 'タイトル', '詳細', '優先度', '開始日時', '終了日時', 'カラー', 'ステータス', 'メール通知', 'カレンダー連携']);
-  }
-  
-  const calendar = CalendarApp.getDefaultCalendar();
-  
-  const lastRow = sheet.getLastRow();
-  let existingValues = [];
-  if (lastRow > 1) {
-    existingValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  }
-  const idRowMap = {};
-  for (let i = 0; i < existingValues.length; i++) {
-    const idVal = existingValues[i][0];
-    if (idVal) {
-      idRowMap[idVal.toString()] = i + 2; 
-    }
-  }
-
-  data.forEach(function(todo) {
-    let calendarStatus = "対象外";
-    
-    if (todo.dueDate && todo.dueDate !== '') {
-      try {
-        const startDate = new Date(todo.dueDate);
-        
-        let endDate;
-        if (todo.endDate && todo.endDate !== '') {
-          endDate = new Date(todo.endDate);
-          if (endDate <= startDate) {
-            endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-          }
-        } else {
-          endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
-        }
-        
-        const isMemo = todo.type === 'memo';
-        const typeMark = isMemo ? '📝メモ' : 'TODO';
-        const priorityMark = todo.priority ? `【${todo.priority}】` : '【中】';
-        const activeTitle = `${typeMark}: ${priorityMark}${todo.title}`;
-        const doneTitle = `✅完了: ${todo.title}`;
-        const description = todo.description || "";
-        
-        let eventColor = null;
-        if (todo.color === 'green') eventColor = CalendarApp.EventColor.PALE_GREEN;
-        else if (todo.color === 'yellow') eventColor = CalendarApp.EventColor.YELLOW;
-        else if (todo.color === 'purple') eventColor = CalendarApp.EventColor.MAUVE;
-        else if (todo.color === 'orange') eventColor = CalendarApp.EventColor.PALE_RED;
-        else eventColor = CalendarApp.EventColor.PALE_BLUE;
-        
-        const events = calendar.getEvents(startDate, endDate);
-        let targetEvent = null;
-        
-        for (let i = 0; i < events.length; i++) {
-          const t = events[i].getTitle();
-          if (t.includes(todo.title)) {
-            targetEvent = events[i];
-            break;
-          }
-        }
-
-        if (todo.status === '完了') {
-          if (targetEvent) {
-            targetEvent.setTitle(doneTitle);
-            targetEvent.setDescription(description);
-            calendarStatus = "完了更新済";
-          }
-        } else {
-          if (!targetEvent) {
-            const newEvent = calendar.createEvent(activeTitle, startDate, endDate);
-            newEvent.setDescription(description);
-            if (eventColor) newEvent.setColor(eventColor);
-            calendarStatus = "新規登録済";
-          } else {
-            targetEvent.setTitle(activeTitle);
-            targetEvent.setTime(startDate, endDate);
-            targetEvent.setDescription(description);
-            if (eventColor) targetEvent.setColor(eventColor);
-            calendarStatus = "同期済";
-          }
-        }
-      } catch (err) {
-        calendarStatus = "エラー: " + err.message;
-      }
-    }
-
-    // ★ スプレッドシートに書き込む11列のデータ
-    const rowData = [
-      todo.id, 
-      todo.type === 'memo' ? 'メモ' : 'TODO', // B列
-      todo.title,      // C列
-      todo.description,// D列
-      todo.priority,   // E列
-      todo.dueDate,    // F列
-      todo.endDate,    // G列
-      todo.color,      // H列
-      todo.status,     // I列 (未完了/チェック済/完了のいずれか)
-      todo.mailNotify ? '希望する' : '希望しない', // J列
-      calendarStatus   // K列
-    ];
-
-    // 背景色を設定
-    let bgColor = '#ffffff';
-    if (todo.status === '完了' || todo.status === 'チェック済') {
-      bgColor = '#fce4ec'; // 完了系はピンク
-    } else {
-      if (todo.color === 'green') bgColor = '#e8f5e9';
-      else if (todo.color === 'yellow') bgColor = '#fffde7';
-      else if (todo.color === 'purple') bgColor = '#f3e5f5';
-      else if (todo.color === 'orange') bgColor = '#ffe0b2';
-      else bgColor = '#e3f2fd'; // blue
-    }
-    const bgRow = new Array(rowData.length).fill(bgColor);
-
-    try {
-      const todoIdStr = todo.id.toString();
-      if (idRowMap[todoIdStr]) {
-        const rowNum = idRowMap[todoIdStr];
-        const range = sheet.getRange(rowNum, 1, 1, rowData.length);
-        range.setValues([rowData]);
-        range.setBackgrounds([bgRow]);
-      } else {
-        sheet.appendRow(rowData);
-        const newRowNum = sheet.getLastRow();
-        const range = sheet.getRange(newRowNum, 1, 1, rowData.length);
-        range.setBackgrounds([bgRow]);
-        idRowMap[todoIdStr] = newRowNum;
-      }
-    } catch (err) {
-      sheet.appendRow(['エラー', '書き込み失敗', err.message, '', '', '', '', '', '', '', '']);
-    }
-  });
-  
-  return ContentService.createTextOutput("Success");
-}
-```
-
-これで、チェックボタンを押しても画面から消えず、取り消し線が入った状態で「完了履歴へ手動で移動する」ボタンが現れます。誤操作もなくなり、気持ちよくタスクを管理できるはずです！
