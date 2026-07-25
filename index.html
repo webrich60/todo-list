@@ -7,7 +7,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   
-  <!-- 最も安定しているReactとBabelのバージョンを厳選 -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
@@ -37,21 +36,28 @@
 
     const App = () => {
       const [currentTime, setCurrentTime] = useState(new Date());
-      const [currentView, setCurrentView] = useState('list'); // 起動時はタスク一覧を初期表示
+      const [currentView, setCurrentView] = useState('list'); 
       const [isLoading, setIsLoading] = useState(false);
       const [isSyncing, setIsSyncing] = useState(false);
-      const [syncError, setSyncError] = useState(false); // 同期エラー表示フラグ
+      const [syncError, setSyncError] = useState(false); 
       
       const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('gas_url') || '');
 
       const [todos, setTodos] = useState(() => {
         const saved = localStorage.getItem('todos');
-        return saved ? JSON.parse(saved) : [];
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          // 古いバージョンのデータを新仕様（status: 未完了/チェック済/完了）に自動変換
+          return parsed.map(t => {
+            if (t.status !== undefined) return t; 
+            return { ...t, status: t.completed ? '完了' : '未完了' };
+          });
+        }
+        return [];
       });
 
-      // フォーム用のステート
       const [editingTodo, setEditingTodo] = useState(null);
-      const [newType, setNewType] = useState('todo'); // 'todo' または 'memo'
+      const [newType, setNewType] = useState('todo'); 
       const [newTitle, setNewTitle] = useState('');
       const [newDescription, setNewDescription] = useState(''); 
       const [newDueDate, setNewDueDate] = useState('');
@@ -61,12 +67,10 @@
       const [newPriority, setNewPriority] = useState('中');
       const [newMailNotify, setNewMailNotify] = useState(false);
 
-      // アプリ起動時に最新データを静かに読み込む
       useEffect(() => {
         loadTodosFromSpreadsheet(true);
       }, [gasUrl]);
 
-      // 30秒ごとにバックグラウンドで静かに同期（画面を邪魔しない）
       useEffect(() => {
         if (!gasUrl) return;
         const syncTimer = setInterval(() => {
@@ -75,13 +79,11 @@
         return () => clearInterval(syncTimer);
       }, [gasUrl]);
 
-      // 1分ごとに現在時刻を更新
       useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 60000);
         return () => clearInterval(timer);
       }, []);
 
-      // スプレッドシート（GAS）からデータを安全に読み込む関数 (JSONP)
       const loadTodosFromSpreadsheet = (isSilent = false) => {
         if (!gasUrl) return;
         if (!isSilent) setIsLoading(true);
@@ -89,7 +91,6 @@
         const callbackName = 'gasCallback_' + Date.now();
         let isResponded = false;
         
-        // データの受け取り用のグローバル関数を設定
         window[callbackName] = (data) => {
           isResponded = true;
           setSyncError(false);
@@ -114,21 +115,18 @@
           if (scriptEl) scriptEl.remove();
         };
 
-        // スクリプトタグを生成して安全に通信
         const script = document.createElement('script');
         script.id = callbackName;
         const separator = gasUrl.includes('?') ? '&' : '?';
-        // キャッシュを強制的に回避するタイムスタンプを付与
         script.src = `${gasUrl}${separator}callback=${callbackName}&_=${Date.now()}`;
         
         script.onerror = () => {
           isResponded = true;
-          setSyncError(true); // エラーでもポップアップは出さず、ステータスのみ変更
+          setSyncError(true);
           if (!isSilent) setIsLoading(false);
           cleanup();
         };
 
-        // 8秒で通信がなければタイムアウトとし、アプリの操作を絶対に止めない
         setTimeout(() => {
           if (!isResponded) {
             setSyncError(true);
@@ -161,7 +159,6 @@
         setNewImage(null); setNewColor('blue'); setNewPriority('中'); setNewMailNotify(false); setEditingTodo(null);
       };
 
-      // GASへのエクスポート (保存時に自動同期)
       const exportToSpreadsheet = async (currentTodos) => {
         if (!gasUrl) return;
         setIsSyncing(true);
@@ -169,15 +166,15 @@
         try {
           const exportData = currentTodos.map(t => ({ 
             id: t.id, 
-            type: t.type === 'memo' ? 'メモ' : 'TODO', 
+            type: t.type || 'todo', 
             title: t.title,                            
             description: t.description || '',          
             priority: t.priority || '中',
-            dueDate: t.dueDate || '期限なし', 
+            dueDate: t.dueDate || '', 
             endDate: t.endDate || '', 
             color: t.color || 'blue',
-            mailNotify: t.mailNotify ? '希望する' : '希望しない',
-            completed: t.completed ? '完了' : '未完了' // ★ここを修正しました！
+            status: t.status || '未完了', // 未完了・チェック済・完了のいずれかを正確に送信
+            mailNotify: t.mailNotify || false
           }));
           await fetch(gasUrl, { 
             method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exportData) 
@@ -190,7 +187,6 @@
         }
       };
 
-      // タスクの追加
       const addTodo = async (e) => {
         e.preventDefault();
         if (!newTitle.trim()) return;
@@ -204,7 +200,7 @@
           color: newColor, 
           priority: newPriority,
           mailNotify: newMailNotify, 
-          completed: false, 
+          status: '未完了', // 新規は必ず未完了
           imageUrl: newImage 
         };
         const updatedTodos = [...todos, newTodo];
@@ -215,7 +211,6 @@
         await exportToSpreadsheet(updatedTodos);
       };
 
-      // タスクの修正
       const updateTodo = async (e) => {
         e.preventDefault();
         if (!newTitle.trim() || !editingTodo) return;
@@ -236,13 +231,12 @@
         const updatedTodos = todos.map(t => t.id === editingTodo.id ? updatedTodo : t);
         setTodos(updatedTodos);
         localStorage.setItem('todos', JSON.stringify(updatedTodos));
-        const viewToReturn = updatedTodo.completed ? 'history' : (updatedTodo.type === 'memo' ? 'memo' : 'list');
+        const viewToReturn = updatedTodo.status === '完了' ? 'history' : (updatedTodo.type === 'memo' ? 'memo' : 'list');
         resetForm();
         setCurrentView(viewToReturn);
         await exportToSpreadsheet(updatedTodos);
       };
 
-      // 編集画面を開く
       const startEdit = (todo) => {
         setEditingTodo(todo);
         setNewType(todo.type || 'todo');
@@ -266,8 +260,29 @@
         }
       };
 
+      // チェックボタンを押したときの処理（画面から消さず、取り消し線だけ引く）
       const toggleComplete = async (id) => {
-        const updatedTodos = todos.map(todo => todo.id === id ? { ...todo, completed: !todo.completed } : todo);
+        const updatedTodos = todos.map(todo => {
+          if (todo.id === id) {
+            // チェック済 or 完了なら未完了に戻す。未完了ならチェック済にする。
+            const newStatus = (todo.status === 'チェック済' || todo.status === '完了') ? '未完了' : 'チェック済';
+            return { ...todo, status: newStatus };
+          }
+          return todo;
+        });
+        setTodos(updatedTodos);
+        localStorage.setItem('todos', JSON.stringify(updatedTodos));
+        await exportToSpreadsheet(updatedTodos);
+      };
+
+      // 専用ボタンを押して、手動で履歴タブに送る処理
+      const archiveTodo = async (id) => {
+        const updatedTodos = todos.map(todo => {
+          if (todo.id === id) {
+            return { ...todo, status: '完了' }; // ここで初めて「完了」になる
+          }
+          return todo;
+        });
         setTodos(updatedTodos);
         localStorage.setItem('todos', JSON.stringify(updatedTodos));
         await exportToSpreadsheet(updatedTodos);
@@ -293,13 +308,13 @@
         return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&details=${details}${dates}`;
       };
 
-      const activeTodos = todos.filter(todo => !todo.completed && (todo.type === 'todo' || !todo.type));
-      const activeMemos = todos.filter(todo => !todo.completed && todo.type === 'memo');
-      const completedTodos = todos.filter(todo => todo.completed).sort((a, b) => b.id - a.id);
+      // フィルターの条件を更新（履歴タブに行くのは「完了」のみ）
+      const activeTodos = todos.filter(todo => todo.status !== '完了' && (todo.type === 'todo' || !todo.type));
+      const activeMemos = todos.filter(todo => todo.status !== '完了' && todo.type === 'memo');
+      const completedTodos = todos.filter(todo => todo.status === '完了').sort((a, b) => b.id - a.id);
 
-      // 期限切れタスクの抽出 (安全設計)
       const expiredTodos = activeTodos.filter(todo => {
-        if (!todo.dueDate) return false;
+        if (!todo.dueDate || todo.status === 'チェック済') return false; // チェック済は期限切れにしない
         const d = new Date(todo.dueDate);
         return !isNaN(d.getTime()) && d < currentTime;
       });
@@ -333,17 +348,25 @@
         const dueObj = new Date(todo.dueDate);
         const isValidDate = !isNaN(dueObj.getTime());
         
-        const isExpired = !todo.completed && todo.dueDate && isValidDate && dueObj < currentTime;
-        const alertBadge = !todo.completed && isValidDate ? getAlertBadge(todo.dueDate) : null;
+        const isCompleted = todo.status === '完了';
+        const isChecked = todo.status === 'チェック済';
+        const isCrossedOut = isCompleted || isChecked;
+        
+        const isExpired = !isCrossedOut && todo.dueDate && isValidDate && dueObj < currentTime;
+        const alertBadge = !isCrossedOut && isValidDate ? getAlertBadge(todo.dueDate) : null;
         
         let borderColorClass = 'border-gray-100';
         let iconColorClass = 'text-gray-400';
         let bgClass = 'bg-white';
         let titleColorClass = 'text-slate-700';
         
-        if (todo.completed) {
+        if (isCompleted) {
           bgClass = 'bg-gray-50 opacity-70';
           titleColorClass = 'line-through text-gray-400';
+        } else if (isChecked) {
+          bgClass = 'bg-white opacity-80';
+          titleColorClass = 'line-through text-slate-400';
+          borderColorClass = 'border-l-4 border-l-gray-300 border-y-gray-100 border-r-gray-100';
         } else if (isExpired) {
           bgClass = 'bg-red-50';
           borderColorClass = 'border-2 border-red-500 shadow-md animate-bounce-pulse'; 
@@ -366,7 +389,7 @@
         const isMemo = todo.type === 'memo';
 
         return (
-          <div className={`p-4 mb-4 rounded-2xl shadow-sm transition-all ${bgClass} ${borderColorClass}`}>
+          <div className={`p-4 mb-4 rounded-2xl shadow-sm transition-all duration-300 ${bgClass} ${borderColorClass}`}>
             
             {alertBadge && (
               <div className="mb-3">
@@ -377,8 +400,8 @@
             )}
 
             <div className="flex items-start justify-between gap-3">
-              <button onClick={() => toggleComplete(todo.id)} className={`mt-1 flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-all ${todo.completed ? 'bg-[#98C4A6] text-white shadow-inner' : 'border-2 border-gray-300 hover:border-gray-500 bg-white'}`}>
-                {todo.completed && <i className="fa-solid fa-check text-xs"></i>}
+              <button onClick={() => toggleComplete(todo.id)} className={`mt-1 flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-all ${isCrossedOut ? 'bg-[#98C4A6] text-white shadow-inner' : 'border-2 border-gray-300 hover:border-gray-500 bg-white'}`}>
+                {isCrossedOut && <i className="fa-solid fa-check text-xs"></i>}
               </button>
               
               <div className="flex flex-col flex-1 min-w-0">
@@ -388,7 +411,7 @@
                 </span>
                 
                 {todo.description && (
-                  <p className={`mt-1 text-sm leading-relaxed whitespace-pre-wrap ${todo.completed ? 'text-gray-300' : (isExpired ? 'text-red-600 font-bold' : 'text-gray-500')}`}>
+                  <p className={`mt-1 text-sm leading-relaxed whitespace-pre-wrap ${isCrossedOut ? 'line-through text-gray-300' : (isExpired ? 'text-red-600 font-bold' : 'text-gray-500')}`}>
                     {todo.description}
                   </p>
                 )}
@@ -405,7 +428,7 @@
                     </span>
                   )}
 
-                  {todo.mailNotify && !todo.completed && (
+                  {todo.mailNotify && !isCrossedOut && (
                     <span className="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded-md font-bold flex items-center gap-1">
                       <i className="fa-regular fa-envelope"></i> 通知オン
                     </span>
@@ -425,14 +448,23 @@
               </div>
             </div>
 
-            {!todo.completed && todo.dueDate && (
+            {/* 手動で履歴に移動するためのボタン（チェック済みの時だけ表示） */}
+            {isChecked && (
+              <div className="mt-4 pt-3 border-t border-gray-100">
+                <button onClick={() => archiveTodo(todo.id)} className="w-full py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-600 font-black text-xs rounded-xl transition-all flex items-center justify-center gap-2 border-2 border-gray-200 active:scale-95">
+                  <i className="fa-solid fa-box-archive"></i> 完了履歴へ手動で移動する
+                </button>
+              </div>
+            )}
+
+            {!isCrossedOut && todo.dueDate && (
               <div className="mt-4 pt-3 border-t border-gray-100 flex gap-2">
                  <a href={getGoogleCalendarUrl(todo)} target="_blank" rel="noopener noreferrer" 
                     className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-bold rounded-xl border border-blue-200 text-xs transition-all active:scale-95">
-                   <i className="fa-brands fa-google"></i> 手動カレンダー追加
+                   <i className="fa-brands fa-google"></i> カレンダー追加
                  </a>
                  <div className="flex-1 flex items-center justify-center gap-1 text-slate-400 border border-gray-200 rounded-xl bg-gray-50 text-[11px] font-bold">
-                   <i className="fa-solid fa-cloud-arrow-up text-green-400"></i> カレンダー自動同期
+                   <i className="fa-solid fa-cloud-arrow-up text-green-400"></i> 自動同期済
                  </div>
               </div>
             )}
@@ -548,7 +580,6 @@
               <div className="flex flex-col items-center">
                 <h1 className="text-2xl font-black tracking-tighter flex items-center gap-2"><i className="fa-solid fa-calendar-check text-[#98C4A6]"></i> TODO管理</h1>
                 
-                {/* 同期ステータスの小さな表示 */}
                 {gasUrl && (
                   <span className="text-[10px] mt-1 font-bold flex items-center gap-1">
                     {isSyncing ? (
@@ -564,7 +595,6 @@
                 )}
               </div>
               
-              {/* スプレッドシートから強制再読込ボタン */}
               {gasUrl ? (
                 <button onClick={() => loadTodosFromSpreadsheet(false)} title="スプレッドシートから再読込" className="w-10 h-10 flex items-center justify-center text-gray-500 hover:text-slate-800 bg-white rounded-full shadow-sm border-2 border-gray-200 transition-all active:scale-90">
                   <i className="fa-solid fa-arrows-rotate"></i>
@@ -593,11 +623,9 @@
               </div>
             )}
 
-            {/* --- 進行中TODOリスト画面 --- */}
             {currentView === 'list' && (
               <div className="animate-in fade-in slide-in-from-right-8">
                 
-                {/* 期限切れアラートバナー */}
                 {expiredTodos.length > 0 && (
                   <div className="mb-6 bg-red-600 text-white p-4 rounded-2xl shadow-lg border-2 border-red-700 animate-in fade-in">
                     <h3 className="font-black flex items-center gap-2 text-lg">
@@ -621,7 +649,6 @@
               </div>
             )}
 
-            {/* --- 記憶・メモ画面 --- */}
             {currentView === 'memo' && (
               <div className="animate-in fade-in slide-in-from-right-8">
                 <h2 className="text-lg font-black text-slate-700 mb-4 ml-2 flex items-center gap-2">
@@ -637,7 +664,6 @@
               </div>
             )}
 
-            {/* --- 完了履歴画面 --- */}
             {currentView === 'history' && (
               <div className="animate-in fade-in slide-in-from-right-8">
                 <h2 className="text-lg font-black text-slate-500 mb-4 ml-2 flex items-center gap-2">
@@ -653,7 +679,6 @@
               </div>
             )}
 
-            {/* --- 設定画面 --- */}
             {currentView === 'settings' && (
               <div className="animate-in fade-in">
                 <button onClick={() => setCurrentView('list')} className="mb-8 text-slate-600 font-black bg-white px-5 py-2.5 rounded-full shadow-sm border-2 border-gray-200 active:scale-90 transition-all"><i className="fa-solid fa-arrow-left"></i> 戻る</button>
@@ -666,17 +691,15 @@
                     <div>
                       <label className="text-[10px] font-black text-gray-500 mb-2 block uppercase tracking-widest ml-1">GAS Web App URL</label>
                       <input type="text" value={gasUrl} onChange={(e) => setGasUrl(e.target.value)} placeholder="https://script.google.com/..." className="w-full px-5 py-4 bg-white border-2 border-gray-400 rounded-2xl focus:border-gray-700 focus:outline-none font-bold text-gray-900 transition-all" />
-                      <p className="text-xs text-gray-500 mt-2">※メール通知を自動で送るには、GAS側で1時間おきに実行されるタイマートリガーを設定し、送信処理を記述する必要があります。</p>
                     </div>
                     <button onClick={() => saveGasUrl(gasUrl)} className="w-full py-4.5 bg-[#98C4A6] text-white font-black rounded-2xl shadow-xl shadow-[#98C4A6]/20 transition-all active:scale-95">設定を保存</button>
                     
-                    {/* 強制クラウドデータ復旧（レスキュー） */}
                     <div className="mt-8 pt-6 border-t-2 border-gray-100">
                       <h3 className="text-sm font-black text-slate-700 mb-2 flex items-center gap-2">
                         <i className="fa-solid fa-life-ring text-blue-500"></i> 万が一のデータ復元（レスキュー）
                       </h3>
                       <p className="text-[10px] text-gray-500 mb-4 leading-relaxed font-bold">
-                        クラウド（スプレッドシート）上のデータが突然消えてしまった場合、現在この端末の画面に残っているデータをクラウドへ強制的に上書きして復旧させます。
+                        クラウド上のデータがおかしい場合、現在この画面に表示されているデータでクラウド側を強制上書きして修正します。
                       </p>
                       <button type="button" onClick={async () => {
                         if (window.confirm('現在の端末のデータでクラウド（スプレッドシート）を上書き復旧します。よろしいですか？')) {
@@ -692,7 +715,6 @@
               </div>
             )}
 
-            {/* 下部固定ナビゲーションバー */}
             <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-100 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.02)] z-50">
               <div className="max-w-md mx-auto flex justify-around items-center p-2">
                 <button onClick={() => {resetForm(); setCurrentView('input');}} className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === 'input' ? 'text-slate-800' : 'text-gray-400 hover:text-gray-600'}`}>
@@ -725,3 +747,224 @@
   </script>
 </body>
 </html>
+```
+
+### 2. GASの修正 (`backend.gs`)
+今の `コード.gs` をすべて消して、以下のコードを丸ごと貼り付けて保存し、**必ず「新しいデプロイ」**をして、そのURLをアプリの設定画面に貼り付けてください。
+
+```javascript:TODO管理アプリバックエンド(GAS):backend.gs
+/**
+ * TODO管理アプリ用 バックエンドプログラム
+ * 新仕様: 「未完了」「チェック済」「完了」の3段階ステータス対応版
+ */
+
+function doGet(e) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const data = sheet.getDataRange().getValues();
+  
+  const callback = e.parameter.callback;
+  let resultJSON = "[]";
+
+  if (data.length > 1) {
+    const headers = data[0];
+    const idCol = headers.indexOf('ID');
+    const typeCol = headers.indexOf('タスク名');
+    const titleCol = headers.indexOf('タイトル');
+    const descCol = headers.indexOf('詳細');
+    const priorityCol = headers.indexOf('優先度');
+    const dateCol = headers.indexOf('開始日時');
+    const endDateCol = headers.indexOf('終了日時');
+    const colorCol = headers.indexOf('カラー');
+    const statusCol = headers.indexOf('ステータス');
+    const mailNotifyCol = headers.indexOf('メール通知');
+
+    const todos = [];
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (!row[idCol]) continue;
+      
+      todos.push({
+        id: Number(row[idCol]),
+        type: row[typeCol] === 'メモ' ? 'memo' : 'todo',
+        title: String(row[titleCol]),
+        description: String(row[descCol] || ''),
+        priority: String(row[priorityCol] || '中'),
+        dueDate: row[dateCol] && row[dateCol] !== '期限なし' ? formatDateToISO(row[dateCol]) : null,
+        endDate: row[endDateCol] ? formatDateToISO(row[endDateCol]) : null,
+        color: String(row[colorCol] || 'blue'),
+        status: String(row[statusCol] || '未完了'), // そのまま文字列（未完了/チェック済/完了）を返す
+        mailNotify: row[mailNotifyCol] === '希望する'
+      });
+    }
+    resultJSON = JSON.stringify(todos);
+  }
+
+  if (callback) {
+    return ContentService.createTextOutput(callback + '(' + resultJSON + ');')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  } else {
+    return ContentService.createTextOutput(resultJSON)
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function formatDateToISO(dateVal) {
+  if (dateVal instanceof Date) {
+    return Utilities.formatDate(dateVal, "Asia/Tokyo", "yyyy-MM-dd'T'HH:mm");
+  }
+  return dateVal;
+}
+
+function doPost(e) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  
+  let data;
+  try {
+    data = JSON.parse(e.postData.contents);
+  } catch (error) {
+    return ContentService.createTextOutput("Error: データの解析に失敗しました。");
+  }
+
+  if (!data || data.length === 0) {
+    return ContentService.createTextOutput("No data to update.");
+  }
+  
+  // 完全版の11列ヘッダー生成
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(['ID', 'タスク名', 'タイトル', '詳細', '優先度', '開始日時', '終了日時', 'カラー', 'ステータス', 'メール通知', 'カレンダー連携']);
+  }
+  
+  const calendar = CalendarApp.getDefaultCalendar();
+  
+  const lastRow = sheet.getLastRow();
+  let existingValues = [];
+  if (lastRow > 1) {
+    existingValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  }
+  const idRowMap = {};
+  for (let i = 0; i < existingValues.length; i++) {
+    const idVal = existingValues[i][0];
+    if (idVal) {
+      idRowMap[idVal.toString()] = i + 2; 
+    }
+  }
+
+  data.forEach(function(todo) {
+    let calendarStatus = "対象外";
+    
+    if (todo.dueDate && todo.dueDate !== '') {
+      try {
+        const startDate = new Date(todo.dueDate);
+        
+        let endDate;
+        if (todo.endDate && todo.endDate !== '') {
+          endDate = new Date(todo.endDate);
+          if (endDate <= startDate) {
+            endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+          }
+        } else {
+          endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
+        }
+        
+        const isMemo = todo.type === 'memo';
+        const typeMark = isMemo ? '📝メモ' : 'TODO';
+        const priorityMark = todo.priority ? `【${todo.priority}】` : '【中】';
+        const activeTitle = `${typeMark}: ${priorityMark}${todo.title}`;
+        const doneTitle = `✅完了: ${todo.title}`;
+        const description = todo.description || "";
+        
+        let eventColor = null;
+        if (todo.color === 'green') eventColor = CalendarApp.EventColor.PALE_GREEN;
+        else if (todo.color === 'yellow') eventColor = CalendarApp.EventColor.YELLOW;
+        else if (todo.color === 'purple') eventColor = CalendarApp.EventColor.MAUVE;
+        else if (todo.color === 'orange') eventColor = CalendarApp.EventColor.PALE_RED;
+        else eventColor = CalendarApp.EventColor.PALE_BLUE;
+        
+        const events = calendar.getEvents(startDate, endDate);
+        let targetEvent = null;
+        
+        for (let i = 0; i < events.length; i++) {
+          const t = events[i].getTitle();
+          if (t.includes(todo.title)) {
+            targetEvent = events[i];
+            break;
+          }
+        }
+
+        if (todo.status === '完了') {
+          if (targetEvent) {
+            targetEvent.setTitle(doneTitle);
+            targetEvent.setDescription(description);
+            calendarStatus = "完了更新済";
+          }
+        } else {
+          if (!targetEvent) {
+            const newEvent = calendar.createEvent(activeTitle, startDate, endDate);
+            newEvent.setDescription(description);
+            if (eventColor) newEvent.setColor(eventColor);
+            calendarStatus = "新規登録済";
+          } else {
+            targetEvent.setTitle(activeTitle);
+            targetEvent.setTime(startDate, endDate);
+            targetEvent.setDescription(description);
+            if (eventColor) targetEvent.setColor(eventColor);
+            calendarStatus = "同期済";
+          }
+        }
+      } catch (err) {
+        calendarStatus = "エラー: " + err.message;
+      }
+    }
+
+    // ★ スプレッドシートに書き込む11列のデータ
+    const rowData = [
+      todo.id, 
+      todo.type === 'memo' ? 'メモ' : 'TODO', // B列
+      todo.title,      // C列
+      todo.description,// D列
+      todo.priority,   // E列
+      todo.dueDate,    // F列
+      todo.endDate,    // G列
+      todo.color,      // H列
+      todo.status,     // I列 (未完了/チェック済/完了のいずれか)
+      todo.mailNotify ? '希望する' : '希望しない', // J列
+      calendarStatus   // K列
+    ];
+
+    // 背景色を設定
+    let bgColor = '#ffffff';
+    if (todo.status === '完了' || todo.status === 'チェック済') {
+      bgColor = '#fce4ec'; // 完了系はピンク
+    } else {
+      if (todo.color === 'green') bgColor = '#e8f5e9';
+      else if (todo.color === 'yellow') bgColor = '#fffde7';
+      else if (todo.color === 'purple') bgColor = '#f3e5f5';
+      else if (todo.color === 'orange') bgColor = '#ffe0b2';
+      else bgColor = '#e3f2fd'; // blue
+    }
+    const bgRow = new Array(rowData.length).fill(bgColor);
+
+    try {
+      const todoIdStr = todo.id.toString();
+      if (idRowMap[todoIdStr]) {
+        const rowNum = idRowMap[todoIdStr];
+        const range = sheet.getRange(rowNum, 1, 1, rowData.length);
+        range.setValues([rowData]);
+        range.setBackgrounds([bgRow]);
+      } else {
+        sheet.appendRow(rowData);
+        const newRowNum = sheet.getLastRow();
+        const range = sheet.getRange(newRowNum, 1, 1, rowData.length);
+        range.setBackgrounds([bgRow]);
+        idRowMap[todoIdStr] = newRowNum;
+      }
+    } catch (err) {
+      sheet.appendRow(['エラー', '書き込み失敗', err.message, '', '', '', '', '', '', '', '']);
+    }
+  });
+  
+  return ContentService.createTextOutput("Success");
+}
+```
+
+これで、チェックボタンを押しても画面から消えず、取り消し線が入った状態で「完了履歴へ手動で移動する」ボタンが現れます。誤操作もなくなり、気持ちよくタスクを管理できるはずです！
