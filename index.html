@@ -1,1 +1,659 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Life Compass｜人生統合OS</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; }
+    .tab-active { background: #0f172a; color: #fff; border-color: #0f172a; box-shadow: 0 10px 18px rgba(15,23,42,.12); }
+    .tab-inactive { background: #fff; color: #334155; border-color: #cbd5e1; }
+    .tab-inactive:hover { background: #f8fafc; border-color: #94a3b8; }
+    .card { background: white; border: 2px solid #1e293b; border-radius: 1.5rem; box-shadow: 0 10px 20px rgba(15,23,42,.08); }
+    .soft-card { background: white; border: 2px solid #cbd5e1; border-radius: 1.25rem; }
+    .btn-primary { background: #0f172a; color: white; border-bottom: 4px solid #020617; }
+    .btn-primary:active { transform: translateY(2px); border-bottom-width: 1px; }
+    .btn-amber { background: linear-gradient(90deg,#f59e0b,#ea580c); color: white; border-bottom: 4px solid #9a3412; }
+    .btn-amber:active { transform: translateY(2px); border-bottom-width: 1px; }
+    .input { width: 100%; background: white; border: 2px solid #94a3b8; border-radius: .9rem; padding: .75rem .9rem; font-weight: 700; outline: none; color: #0f172a; }
+    .input:focus { border-color: #f59e0b; box-shadow: 0 0 0 4px rgba(245,158,11,.13); }
+    .label { display: block; font-size: .78rem; font-weight: 900; color: #334155; margin-bottom: .35rem; }
+    .toast { animation: slideIn .18s ease-out; }
+    @keyframes slideIn { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    @media print { header, nav, #toast, .no-print { display: none !important; } body { background: #fff !important; } .card, .soft-card { box-shadow: none; } }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-100 text-slate-900">
+  <div id="toast" class="fixed top-4 right-4 z-50 space-y-2 max-w-sm"></div>
 
+  <header class="sticky top-0 z-40 bg-white/95 backdrop-blur border-b-4 border-slate-900 shadow-md">
+    <div class="max-w-7xl mx-auto px-4 md:px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center border-2 border-orange-800 shadow-md">
+          <i data-lucide="compass" class="w-7 h-7 text-white"></i>
+        </div>
+        <div>
+          <h1 class="text-xl md:text-2xl font-black tracking-tight">Life Compass｜人生統合OS</h1>
+          <p class="text-xs md:text-sm font-bold text-slate-500">人生ログ・健康・お金・学び・目標・宝の地図をまとめる個人用アプリ</p>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 no-print">
+        <button id="quickExportBtn" class="px-4 py-2.5 rounded-xl bg-emerald-100 text-emerald-800 border-2 border-emerald-300 hover:bg-emerald-200 font-black flex items-center gap-2">
+          <i data-lucide="download" class="w-4 h-4"></i> JSON保存
+        </button>
+        <button id="printBtn" class="px-4 py-2.5 rounded-xl bg-slate-100 text-slate-800 border-2 border-slate-300 hover:bg-slate-200 font-black flex items-center gap-2">
+          <i data-lucide="printer" class="w-4 h-4"></i> 印刷
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="max-w-7xl mx-auto px-4 md:px-6 py-4 flex gap-2 overflow-x-auto no-print" id="tabs"></nav>
+
+  <main class="max-w-7xl mx-auto px-4 md:px-6 pb-10" id="app"></main>
+
+  <script>
+    const LS_KEY = 'life_compass_state_v1';
+    const BACKUP_KEY = 'life_compass_backup_latest_v1';
+    const LEGACY_KEYS = ['mind_logs','mind_apps','mind_treasures','mind_goals','mind_settings','mind_import_urls'];
+
+    const tabs = [
+      ['home','ホーム','layout-dashboard'],
+      ['logs','人生ログ','book-open'],
+      ['goals','目標管理','target'],
+      ['habits','習慣・行動','repeat'],
+      ['health','健康メモ','heart-pulse'],
+      ['money','お金・収益','wallet'],
+      ['learning','学び','graduation-cap'],
+      ['relationships','人間関係','users'],
+      ['treasures','宝の地図','map'],
+      ['apps','アプリ集','briefcase'],
+      ['ai','AI相談','bot'],
+      ['backup','バックアップ','shield-check']
+    ];
+
+    const logCategories = ['気づき','感情','体調','不安','感謝','アイデア','学び','家族','お金','仕事/ビジネス','その他'];
+    const domains = ['人生','健康','お金','家族','仕事/ビジネス','学び','旅','住まい','人間関係','その他'];
+    const treasureTypes = ['やりたい事','行きたい場所','欲しいもの','会いたい人','作りたいもの','叶えたい夢'];
+    const moneyTypes = ['収益アイデア','売上メモ','支出メモ','SNS施策','改善メモ','次の一手','アプリ収益化'];
+    const aiModes = {
+      daily: '今日の行動整理',
+      life: '人生相談',
+      business: 'ビジネス相談',
+      health: '健康メモ整理',
+      money: 'お金と収益化相談',
+      learning: '学習計画相談',
+      relationship: '人間関係の整理',
+      weekly: '1週間の振り返り',
+      next: '次の一手提案'
+    };
+
+    let currentTab = 'home';
+    let state = loadState();
+
+    function defaultState() {
+      return {
+        lifeCompassVersion: 1,
+        profile: { name: '', memo: '' },
+        settings: { geminiKey: '', aiModel: 'gemini-2.5-flash' },
+        goals: [
+          { id: makeId(), domain: '人生', title: '時間と場所に縛られず、自分の価値を届ける人生', why: '自分の経験を力に変える', targetDate: '', progress: 10, status: '進行中', nextAction: '今日できる小さな一歩を書く', createdAt: nowIso(), updatedAt: nowIso() },
+          { id: makeId(), domain: 'お金', title: '月5万円の継続副収入を作る', why: '福井クイズ・LINEスタンプ・AIツールを育てる', targetDate: '', progress: 5, status: '進行中', nextAction: 'SNS投稿の型を1つ作る', createdAt: nowIso(), updatedAt: nowIso() }
+        ],
+        logs: [],
+        habits: [],
+        health: [],
+        money: [],
+        learning: [],
+        relationships: [],
+        treasures: [],
+        apps: [],
+        meta: { createdAt: nowIso(), updatedAt: nowIso(), lastBackupAt: '', migratedFromLegacy: false }
+      };
+    }
+
+    function nowIso(){ return new Date().toISOString(); }
+    function today(){ return new Date().toISOString().slice(0,10); }
+    function makeId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
+    function clone(obj){ return (typeof structuredClone === 'function') ? structuredClone(obj) : JSON.parse(JSON.stringify(obj)); }
+    function $(id){ return document.getElementById(id); }
+    function esc(value){ return String(value ?? '').replace(/[&<>'"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[s])); }
+    function nl2br(value){ return esc(value).replace(/\n/g,'<br>'); }
+    function fmtDate(value){ if(!value) return ''; const d = new Date(value); return Number.isNaN(d.getTime()) ? esc(value) : d.toLocaleString('ja-JP', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); }
+    function fmtDateOnly(value){ if(!value) return ''; const d = new Date(value); return Number.isNaN(d.getTime()) ? esc(value) : d.toLocaleDateString('ja-JP'); }
+
+    function readJsonStorage(key) {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      try { return JSON.parse(raw); }
+      catch (e) {
+        const corruptKey = 'life_compass_corrupted_' + key + '_' + Date.now();
+        try { localStorage.setItem(corruptKey, raw); } catch (_) {}
+        localStorage.removeItem(key);
+        notify('保存データの一部が壊れていたため、退避して初期化しました。JSONバックアップがあれば復元してください。', 'danger');
+        return null;
+      }
+    }
+
+    function loadState() {
+      const loaded = readJsonStorage(LS_KEY);
+      const base = defaultState();
+      if (loaded && loaded.lifeCompassVersion) {
+        return normalizeState({ ...base, ...loaded, meta: { ...base.meta, ...(loaded.meta || {}) }, settings: { ...base.settings, ...(loaded.settings || {}) } });
+      }
+      const migrated = migrateLegacy(base);
+      persistRaw(migrated, false);
+      return migrated;
+    }
+
+    function normalizeState(s) {
+      const base = defaultState();
+      for (const key of Object.keys(base)) if (s[key] === undefined || s[key] === null) s[key] = base[key];
+      for (const listKey of ['goals','logs','habits','health','money','learning','relationships','treasures','apps']) if (!Array.isArray(s[listKey])) s[listKey] = [];
+      return s;
+    }
+
+    function migrateLegacy(base) {
+      const legacyLogs = readJsonStorage('mind_logs') || [];
+      const legacyApps = readJsonStorage('mind_apps') || [];
+      const legacyTreasures = readJsonStorage('mind_treasures') || [];
+      const legacyGoals = readJsonStorage('mind_goals') || null;
+      const legacySettings = readJsonStorage('mind_settings') || null;
+
+      const hasLegacy = legacyLogs.length || legacyApps.length || legacyTreasures.length || legacyGoals || legacySettings;
+      if (!hasLegacy) return base;
+
+      const next = clone(base);
+      next.meta.migratedFromLegacy = true;
+      next.meta.updatedAt = nowIso();
+
+      if (legacyGoals) {
+        next.goals.unshift({
+          id: makeId(), domain: '人生', title: legacyGoals.life || '旧データの人生目標', why: '旧バージョンから移行', targetDate: '', progress: 0, status: '進行中', nextAction: legacyGoals.income || '', createdAt: nowIso(), updatedAt: nowIso()
+        });
+      }
+      if (legacySettings) {
+        next.settings.geminiKey = legacySettings.geminiKey || '';
+      }
+      legacyLogs.forEach(l => next.logs.push({
+        id: l.id || makeId(), category: mapLegacyLogType(l.type), mood: '', title: '', content: l.text || '', createdAt: l.createdAt ? new Date(l.createdAt).toISOString() : nowIso(), updatedAt: nowIso()
+      }));
+      legacyApps.forEach(a => next.apps.push({
+        id: a.id || makeId(), name: a.title || a.name || '', status: mapLegacyAppStatus(a.status), url: a.url || '', description: a.description || '', nextAction: '', createdAt: a.createdAt ? new Date(a.createdAt).toISOString() : nowIso(), updatedAt: nowIso()
+      }));
+      legacyTreasures.forEach(t => next.treasures.push({
+        id: t.id || makeId(), type: mapLegacyTreasureType(t.type), text: t.text || '', image: t.image || '', isCompleted: !!t.isCompleted, actions: Array.isArray(t.actions) ? t.actions : [], createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : nowIso(), updatedAt: nowIso()
+      }));
+      return next;
+    }
+
+    function mapLegacyLogType(type){ return ({ idea:'アイデア', emotion:'感情', thought:'気づき', other:'その他' }[type] || 'その他'); }
+    function mapLegacyTreasureType(type){ return ({ do:'やりたい事', go:'行きたい場所', want:'欲しいもの' }[type] || 'やりたい事'); }
+    function mapLegacyAppStatus(status){ return ({ idea:'アイデア段階', 'in-progress':'開発中', completed:'完成/公開済み' }[status] || 'アイデア段階'); }
+
+    function persistRaw(next, showSuccess = true) {
+      try {
+        next.meta = next.meta || {};
+        next.meta.updatedAt = nowIso();
+        next.meta.lastBackupAt = nowIso();
+        const payload = JSON.stringify(next);
+        localStorage.setItem(LS_KEY, payload);
+        localStorage.setItem(BACKUP_KEY, payload);
+        state = next;
+        if (showSuccess) notify('保存しました。自動バックアップも更新済みです。', 'success');
+        return true;
+      } catch (e) {
+        const sizeMb = estimateSizeMb(next);
+        const message = e && e.name === 'QuotaExceededError'
+          ? `保存容量が足りません。現在の推定サイズは約 ${sizeMb} MB です。画像を減らすか、JSON保存してから不要データを整理してください。`
+          : '保存に失敗しました。JSON保存を実行して、ブラウザ容量や設定を確認してください。';
+        console.error(e);
+        notify(message, 'danger', 9000);
+        return false;
+      }
+    }
+
+    function commit(mutator, message) {
+      const next = clone(state);
+      mutator(next);
+      if (persistRaw(next, false)) {
+        render();
+        notify(message || '保存しました。', 'success');
+        return true;
+      }
+      return false;
+    }
+
+    function estimateSizeMb(data = state) {
+      try { return (new Blob([JSON.stringify(data)]).size / 1024 / 1024).toFixed(2); }
+      catch (_) { return '不明'; }
+    }
+
+    function notify(message, type = 'info', ms = 3600) {
+      const colors = {
+        success: 'bg-emerald-50 border-emerald-500 text-emerald-900',
+        danger: 'bg-rose-50 border-rose-500 text-rose-900',
+        info: 'bg-blue-50 border-blue-500 text-blue-900',
+        warn: 'bg-amber-50 border-amber-500 text-amber-900'
+      };
+      const el = document.createElement('div');
+      el.className = `toast border-2 ${colors[type] || colors.info} rounded-2xl shadow-xl p-4 font-black text-sm`;
+      el.innerHTML = `<div class="flex gap-3 items-start"><i data-lucide="${type === 'danger' ? 'alert-triangle' : type === 'success' ? 'check-circle-2' : 'info'}" class="w-5 h-5 shrink-0"></i><div>${esc(message)}</div></div>`;
+      $('toast').appendChild(el);
+      lucide.createIcons();
+      setTimeout(() => el.remove(), ms);
+    }
+
+    function renderTabs() {
+      $('tabs').innerHTML = tabs.map(([key,label,icon]) => `
+        <button onclick="setTab('${key}')" class="${currentTab === key ? 'tab-active' : 'tab-inactive'} shrink-0 rounded-2xl border-2 px-4 py-3 font-black text-sm flex items-center gap-2 transition-all">
+          <i data-lucide="${icon}" class="w-4 h-4"></i>${label}
+        </button>
+      `).join('');
+      lucide.createIcons();
+    }
+
+    function setTab(tab) { currentTab = tab; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    window.setTab = setTab;
+
+    function render() {
+      renderTabs();
+      const views = {
+        home: renderHome,
+        logs: renderLogs,
+        goals: renderGoals,
+        habits: renderHabits,
+        health: renderHealth,
+        money: renderMoney,
+        learning: renderLearning,
+        relationships: renderRelationships,
+        treasures: renderTreasures,
+        apps: renderApps,
+        ai: renderAi,
+        backup: renderBackup
+      };
+      $('app').innerHTML = views[currentTab] ? views[currentTab]() : renderHome();
+      lucide.createIcons();
+    }
+
+    function pageTitle(icon, title, sub) {
+      return `<section class="card p-5 md:p-6 mb-6">
+        <div class="flex items-start gap-3">
+          <div class="w-12 h-12 rounded-2xl bg-amber-100 border-2 border-amber-300 flex items-center justify-center"><i data-lucide="${icon}" class="w-7 h-7 text-amber-700"></i></div>
+          <div><h2 class="text-2xl font-black">${esc(title)}</h2><p class="text-sm font-bold text-slate-500 mt-1">${esc(sub)}</p></div>
+        </div>
+      </section>`;
+    }
+
+    function statCard(label, value, icon, color) {
+      return `<div class="soft-card p-5"><div class="flex items-center justify-between"><div><p class="text-xs font-black text-slate-500">${esc(label)}</p><p class="text-3xl font-black mt-1 ${color || ''}">${esc(value)}</p></div><i data-lucide="${icon}" class="w-8 h-8 text-slate-400"></i></div></div>`;
+    }
+
+    function renderHome() {
+      const openActions = state.treasures.flatMap(t => (t.actions || []).filter(a => !a.completed).map(a => ({...a, parent:t.text}))).slice(0,5);
+      const recent = [...state.logs].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5);
+      const avgGoal = state.goals.length ? Math.round(state.goals.reduce((s,g)=>s + Number(g.progress || 0),0) / state.goals.length) : 0;
+      return `
+        ${pageTitle('layout-dashboard','ホーム','今日の状態、目標、記録、次の一手を一画面で確認します。')}
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          ${statCard('人生ログ', state.logs.length + '件', 'book-open', 'text-blue-700')}
+          ${statCard('目標の平均進捗', avgGoal + '%', 'target', 'text-emerald-700')}
+          ${statCard('健康メモ', state.health.length + '件', 'heart-pulse', 'text-rose-700')}
+          ${statCard('保存サイズ', estimateSizeMb() + 'MB', 'database', 'text-slate-800')}
+        </div>
+        <div class="grid lg:grid-cols-12 gap-6">
+          <section class="card p-5 md:p-6 lg:col-span-5">
+            <h3 class="text-xl font-black mb-4 flex items-center gap-2"><i data-lucide="edit-3" class="w-5 h-5"></i> 今日の一言メモ</h3>
+            <form onsubmit="addQuickLog(event)" class="space-y-3">
+              <select id="quickLogCategory" class="input">${options(logCategories, '気づき')}</select>
+              <textarea id="quickLogContent" class="input min-h-36 resize-y" placeholder="今日の気づき・気分・不安・感謝・アイデアを自由に書いてください。"></textarea>
+              <button class="btn-amber w-full rounded-xl py-3 font-black">人生ログに残す</button>
+            </form>
+          </section>
+          <section class="card p-5 md:p-6 lg:col-span-7">
+            <h3 class="text-xl font-black mb-4 flex items-center gap-2"><i data-lucide="flag" class="w-5 h-5"></i> 次の一手</h3>
+            ${openActions.length ? openActions.map(a => `<div class="p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl mb-3"><p class="font-black">${esc(a.text)}</p><p class="text-xs font-bold text-slate-500 mt-1">宝の地図：${esc(a.parent)}</p></div>`).join('') : `<div class="p-5 bg-amber-50 border-2 border-amber-200 rounded-2xl font-black text-amber-900">まだ未完了アクションがありません。宝の地図に「次にやること」を追加しましょう。</div>`}
+            <button onclick="setTab('treasures')" class="mt-2 px-4 py-3 rounded-xl btn-primary font-black">宝の地図を開く</button>
+          </section>
+          <section class="card p-5 md:p-6 lg:col-span-6">
+            <h3 class="text-xl font-black mb-4 flex items-center gap-2"><i data-lucide="target" class="w-5 h-5"></i> 進行中の目標</h3>
+            ${state.goals.slice(0,4).map(goalCard).join('') || empty('目標がありません')}
+          </section>
+          <section class="card p-5 md:p-6 lg:col-span-6">
+            <h3 class="text-xl font-black mb-4 flex items-center gap-2"><i data-lucide="history" class="w-5 h-5"></i> 最近の人生ログ</h3>
+            ${recent.map(logItem).join('') || empty('まだ記録がありません')}
+          </section>
+        </div>`;
+    }
+
+    function renderLogs() {
+      return `${pageTitle('book-open','人生ログ','感情・気づき・体調・不安・感謝・アイデアを残します。')}
+      <div class="grid lg:grid-cols-12 gap-6">
+        <section class="card p-5 md:p-6 lg:col-span-4">
+          <h3 class="text-xl font-black mb-4">記録する</h3>
+          <form onsubmit="addLog(event)" class="space-y-4">
+            <div><label class="label">カテゴリ</label><select id="logCategory" class="input">${options(logCategories, '気づき')}</select></div>
+            <div><label class="label">気分メモ・タイトル</label><input id="logTitle" class="input" placeholder="例：少し前向きになれた"></div>
+            <div><label class="label">本文</label><textarea id="logContent" class="input min-h-44 resize-y" required placeholder="今の気持ち、考えたこと、残したいこと"></textarea></div>
+            <button class="btn-primary rounded-xl py-3 w-full font-black">保存する</button>
+          </form>
+        </section>
+        <section class="card p-5 md:p-6 lg:col-span-8">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+            <h3 class="text-xl font-black">履歴タイムライン</h3>
+            <input id="logSearch" class="input md:max-w-xs" placeholder="検索" oninput="filterLogs()">
+          </div>
+          <div id="logsList" class="space-y-4">${renderLogList(state.logs)}</div>
+        </section>
+      </div>`;
+    }
+
+    function renderLogList(list) {
+      return [...list].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(logItem).join('') || empty('まだ記録がありません');
+    }
+
+    function logItem(l) {
+      return `<article class="soft-card p-4">
+        <div class="flex justify-between gap-3"><div><span class="inline-block px-3 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200 text-xs font-black">${esc(l.category)}</span><span class="text-xs font-bold text-slate-500 ml-2">${fmtDate(l.createdAt)}</span></div><button class="no-print text-rose-600 font-black text-xs" onclick="removeItem('logs','${l.id}')">削除</button></div>
+        ${l.title ? `<h4 class="font-black text-lg mt-3">${esc(l.title)}</h4>` : ''}
+        <p class="font-bold text-slate-800 whitespace-pre-wrap mt-2 leading-relaxed">${nl2br(l.content)}</p>
+      </article>`;
+    }
+
+    function renderGoals() {
+      return `${pageTitle('target','目標管理','人生・健康・お金・学びなどの目標と次の行動を管理します。')}
+      <div class="grid lg:grid-cols-12 gap-6">
+        <section class="card p-5 md:p-6 lg:col-span-4">
+          <h3 class="text-xl font-black mb-4">目標を追加</h3>
+          <form onsubmit="addGoal(event)" class="space-y-4">
+            <div><label class="label">分野</label><select id="goalDomain" class="input">${options(domains, '人生')}</select></div>
+            <div><label class="label">目標</label><input id="goalTitle" class="input" required placeholder="例：月5万円の副収入"></div>
+            <div><label class="label">理由</label><textarea id="goalWhy" class="input min-h-24 resize-y" placeholder="なぜ叶えたいか"></textarea></div>
+            <div><label class="label">期限</label><input id="goalTargetDate" type="date" class="input"></div>
+            <div><label class="label">最初の一歩</label><input id="goalNext" class="input" placeholder="今日やる小さな行動"></div>
+            <button class="btn-primary rounded-xl py-3 w-full font-black">目標を保存</button>
+          </form>
+        </section>
+        <section class="card p-5 md:p-6 lg:col-span-8">
+          <h3 class="text-xl font-black mb-4">目標一覧</h3>
+          <div class="space-y-4">${state.goals.map(goalCard).join('') || empty('目標がありません')}</div>
+        </section>
+      </div>`;
+    }
+
+    function goalCard(g) {
+      return `<article class="soft-card p-4 mb-3">
+        <div class="flex justify-between gap-3"><div><span class="inline-block px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-black">${esc(g.domain)}</span><span class="text-xs font-bold text-slate-500 ml-2">${g.targetDate ? '期限 ' + esc(g.targetDate) : ''}</span></div><button class="no-print text-rose-600 font-black text-xs" onclick="removeItem('goals','${g.id}')">削除</button></div>
+        <h4 class="font-black text-lg mt-3">${esc(g.title)}</h4>
+        ${g.why ? `<p class="font-bold text-slate-700 mt-2 whitespace-pre-wrap">${nl2br(g.why)}</p>` : ''}
+        <div class="mt-4"><div class="flex justify-between text-xs font-black text-slate-500 mb-1"><span>進捗</span><span>${Number(g.progress||0)}%</span></div><input type="range" min="0" max="100" value="${Number(g.progress||0)}" onchange="updateProgress('goals','${g.id}',this.value)" class="w-full no-print"><div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden mt-1"><div class="h-full bg-emerald-500" style="width:${Number(g.progress||0)}%"></div></div></div>
+        ${g.nextAction ? `<p class="mt-3 text-sm font-black bg-amber-50 border border-amber-200 rounded-xl p-3">次の一手：${esc(g.nextAction)}</p>` : ''}
+      </article>`;
+    }
+
+    function renderHabits() {
+      const t = today();
+      return `${pageTitle('repeat','習慣・行動','毎日の小さな行動をチェックします。')}
+      <div class="grid lg:grid-cols-12 gap-6">
+        <section class="card p-5 md:p-6 lg:col-span-4">
+          <h3 class="text-xl font-black mb-4">習慣を追加</h3>
+          <form onsubmit="addHabit(event)" class="space-y-4">
+            <div><label class="label">習慣名</label><input id="habitName" class="input" required placeholder="例：SNS投稿を1つ作る"></div>
+            <div><label class="label">分野</label><select id="habitDomain" class="input">${options(domains, '健康')}</select></div>
+            <div><label class="label">メモ</label><textarea id="habitMemo" class="input min-h-24 resize-y"></textarea></div>
+            <button class="btn-primary rounded-xl py-3 w-full font-black">習慣を保存</button>
+          </form>
+        </section>
+        <section class="card p-5 md:p-6 lg:col-span-8">
+          <h3 class="text-xl font-black mb-4">今日のチェック</h3>
+          <div class="space-y-3">${state.habits.map(h => habitCard(h, t)).join('') || empty('習慣がありません')}</div>
+        </section>
+      </div>`;
+    }
+
+    function habitCard(h, date) {
+      const done = (h.checks || []).includes(date);
+      return `<article class="soft-card p-4 flex items-start gap-4">
+        <button onclick="toggleHabit('${h.id}')" class="no-print w-10 h-10 rounded-xl border-2 ${done ? 'bg-emerald-500 border-emerald-600 text-white' : 'bg-white border-slate-300 text-transparent'} flex items-center justify-center shrink-0"><i data-lucide="check" class="w-6 h-6 stroke-[4]"></i></button>
+        <div class="flex-1"><div class="flex justify-between gap-3"><div><h4 class="font-black text-lg ${done ? 'line-through text-slate-500' : ''}">${esc(h.name)}</h4><p class="text-xs font-black text-slate-500">${esc(h.domain)} / 達成 ${((h.checks||[]).length)}日</p></div><button class="no-print text-rose-600 font-black text-xs" onclick="removeItem('habits','${h.id}')">削除</button></div>${h.memo ? `<p class="font-bold text-slate-700 mt-2">${nl2br(h.memo)}</p>` : ''}</div>
+      </article>`;
+    }
+
+    function renderHealth() {
+      return `${pageTitle('heart-pulse','健康メモ','目・腰・血圧・睡眠・通院・薬をまとめます。医療判断ではなく記録用です。')}
+      <div class="grid lg:grid-cols-12 gap-6">
+        <section class="card p-5 md:p-6 lg:col-span-4">
+          <h3 class="text-xl font-black mb-4">健康を記録</h3>
+          <form onsubmit="addHealth(event)" class="space-y-4">
+            <div><label class="label">日付</label><input id="healthDate" type="date" class="input" value="${today()}"></div>
+            <div class="grid grid-cols-2 gap-3"><div><label class="label">血圧 上</label><input id="bpHigh" type="number" class="input" placeholder="150"></div><div><label class="label">血圧 下</label><input id="bpLow" type="number" class="input" placeholder="95"></div></div>
+            <div><label class="label">睡眠</label><input id="sleep" class="input" placeholder="例：6時間 / 途中で起きた"></div>
+            <div><label class="label">目の状態</label><textarea id="eyeNote" class="input min-h-20 resize-y" placeholder="見え方、痛み、ハロー、グレアなど"></textarea></div>
+            <div><label class="label">腰の状態</label><textarea id="backNote" class="input min-h-20 resize-y" placeholder="朝の痛み、散歩後の痛みなど"></textarea></div>
+            <div><label class="label">薬・通院・体調メモ</label><textarea id="healthMemo" class="input min-h-28 resize-y"></textarea></div>
+            <button class="btn-primary rounded-xl py-3 w-full font-black">健康メモを保存</button>
+          </form>
+        </section>
+        <section class="card p-5 md:p-6 lg:col-span-8"><h3 class="text-xl font-black mb-4">健康履歴</h3><div class="space-y-4">${state.health.sort((a,b)=>new Date(b.date)-new Date(a.date)).map(healthCard).join('') || empty('健康メモがありません')}</div></section>
+      </div>`;
+    }
+
+    function healthCard(h) {
+      return `<article class="soft-card p-4"><div class="flex justify-between"><h4 class="font-black text-lg">${esc(h.date)}</h4><button class="no-print text-rose-600 font-black text-xs" onclick="removeItem('health','${h.id}')">削除</button></div>
+      <div class="grid md:grid-cols-2 gap-3 mt-3 text-sm font-bold"><p class="bg-slate-50 rounded-xl p-3 border border-slate-200">血圧：${esc(h.bpHigh || '-')}/${esc(h.bpLow || '-')}</p><p class="bg-slate-50 rounded-xl p-3 border border-slate-200">睡眠：${esc(h.sleep || '-')}</p></div>
+      ${h.eyeNote ? `<p class="mt-3 font-bold"><b>目：</b>${nl2br(h.eyeNote)}</p>` : ''}${h.backNote ? `<p class="mt-3 font-bold"><b>腰：</b>${nl2br(h.backNote)}</p>` : ''}${h.memo ? `<p class="mt-3 font-bold whitespace-pre-wrap"><b>メモ：</b>${nl2br(h.memo)}</p>` : ''}</article>`;
+    }
+
+    function renderMoney() {
+      return `${pageTitle('wallet','お金・収益','副業、SNS施策、売上、改善案、次の一手を記録します。')}
+      <div class="grid lg:grid-cols-12 gap-6"><section class="card p-5 md:p-6 lg:col-span-4"><h3 class="text-xl font-black mb-4">収益メモを追加</h3><form onsubmit="addMoney(event)" class="space-y-4">
+        <div><label class="label">種類</label><select id="moneyType" class="input">${options(moneyTypes, '収益アイデア')}</select></div>
+        <div><label class="label">タイトル</label><input id="moneyTitle" class="input" required placeholder="例：福井クイズ×LINEスタンプ導線"></div>
+        <div><label class="label">金額（任意）</label><input id="moneyAmount" type="number" class="input" placeholder="売上や予算"></div>
+        <div><label class="label">メモ</label><textarea id="moneyMemo" class="input min-h-32 resize-y"></textarea></div>
+        <div><label class="label">次の一手</label><input id="moneyNext" class="input"></div><button class="btn-primary rounded-xl py-3 w-full font-black">保存する</button></form></section>
+        <section class="card p-5 md:p-6 lg:col-span-8"><h3 class="text-xl font-black mb-4">収益メモ一覧</h3><div class="space-y-4">${state.money.map(moneyCard).join('') || empty('収益メモがありません')}</div></section></div>`;
+    }
+
+    function moneyCard(m) { return genericCard('money', m.id, m.type, m.title, m.memo, m.nextAction, m.amount ? '金額：' + Number(m.amount).toLocaleString('ja-JP') + '円' : ''); }
+
+    function renderLearning() {
+      return `${pageTitle('graduation-cap','学び','AI・アプリ作成・マーケティングなどの学習ログを残します。')}
+      <div class="grid lg:grid-cols-12 gap-6"><section class="card p-5 md:p-6 lg:col-span-4"><h3 class="text-xl font-black mb-4">学びを追加</h3><form onsubmit="addLearning(event)" class="space-y-4">
+        <div><label class="label">テーマ</label><input id="learnTopic" class="input" required placeholder="例：Firebase Auth"></div><div><label class="label">教材・URL</label><input id="learnResource" class="input" placeholder="https://"></div>
+        <div><label class="label">進捗</label><input id="learnProgress" type="range" min="0" max="100" value="0" class="w-full"></div><div><label class="label">メモ</label><textarea id="learnMemo" class="input min-h-28 resize-y"></textarea></div><div><label class="label">次の一手</label><input id="learnNext" class="input"></div><button class="btn-primary rounded-xl py-3 w-full font-black">保存する</button></form></section>
+        <section class="card p-5 md:p-6 lg:col-span-8"><h3 class="text-xl font-black mb-4">学習一覧</h3><div class="space-y-4">${state.learning.map(learningCard).join('') || empty('学びの記録がありません')}</div></section></div>`;
+    }
+
+    function learningCard(l) { return genericCard('learning', l.id, '進捗 ' + (l.progress || 0) + '%', l.topic, l.memo, l.nextAction, l.resource || ''); }
+
+    function renderRelationships() {
+      return `${pageTitle('users','人間関係','家族・知人・感謝・連絡したいことを残します。')}
+      <div class="grid lg:grid-cols-12 gap-6"><section class="card p-5 md:p-6 lg:col-span-4"><h3 class="text-xl font-black mb-4">人間関係メモ</h3><form onsubmit="addRelationship(event)" class="space-y-4">
+        <div><label class="label">名前・相手</label><input id="relName" class="input" required></div><div><label class="label">関係</label><input id="relType" class="input" placeholder="家族・友人・仕事など"></div><div><label class="label">メモ</label><textarea id="relMemo" class="input min-h-32 resize-y"></textarea></div><div><label class="label">次にしたいこと</label><input id="relAction" class="input"></div><button class="btn-primary rounded-xl py-3 w-full font-black">保存する</button></form></section>
+        <section class="card p-5 md:p-6 lg:col-span-8"><h3 class="text-xl font-black mb-4">一覧</h3><div class="space-y-4">${state.relationships.map(r => genericCard('relationships', r.id, r.relation || '人間関係', r.name, r.memo, r.nextAction, '')).join('') || empty('人間関係メモがありません')}</div></section></div>`;
+    }
+
+    function renderTreasures() {
+      return `${pageTitle('map','宝の地図','やりたいこと・行きたい場所・欲しいものを、行動に変えます。')}
+      <div class="grid lg:grid-cols-12 gap-6"><section class="card p-5 md:p-6 lg:col-span-4"><h3 class="text-xl font-black mb-4">宝を追加</h3><form onsubmit="addTreasure(event)" class="space-y-4">
+        <div><label class="label">種類</label><select id="treasureType" class="input">${options(treasureTypes, 'やりたい事')}</select></div><div><label class="label">内容</label><textarea id="treasureText" class="input min-h-32 resize-y" required></textarea></div><div><label class="label">最初のアクション</label><input id="treasureAction" class="input" placeholder="例：情報を10分調べる"></div><div><label class="label">写真（任意・容量注意）</label><input id="treasureImage" type="file" accept="image/*" class="input"></div><button class="btn-amber rounded-xl py-3 w-full font-black">地図に刻む</button></form></section>
+        <section class="card p-5 md:p-6 lg:col-span-8"><h3 class="text-xl font-black mb-4">宝の地図</h3><div class="space-y-5">${state.treasures.map(treasureCard).join('') || empty('宝の地図はまだ空です')}</div></section></div>`;
+    }
+
+    function treasureCard(t) {
+      const actions = (t.actions || []).map(a => `<div class="flex items-center gap-2 mt-2"><button onclick="toggleTreasureAction('${t.id}','${a.id}')" class="no-print w-6 h-6 rounded border-2 ${a.completed ? 'bg-emerald-500 border-emerald-600 text-white' : 'border-slate-300 text-transparent'} flex items-center justify-center"><i data-lucide="check" class="w-4 h-4 stroke-[4]"></i></button><span class="font-bold ${a.completed ? 'line-through text-slate-400' : ''}">${esc(a.text)}</span></div>`).join('');
+      return `<article class="soft-card p-5 ${t.isCompleted ? 'opacity-60 bg-slate-50' : ''}"><div class="flex justify-between gap-3"><div><span class="inline-block px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-xs font-black">${esc(t.type)}</span><span class="text-xs font-bold text-slate-500 ml-2">${fmtDate(t.createdAt)}</span></div><div class="flex gap-3 no-print"><button class="text-emerald-700 font-black text-xs" onclick="toggleComplete('treasures','${t.id}')">${t.isCompleted ? '未完了へ' : '完了'}</button><button class="text-rose-600 font-black text-xs" onclick="removeItem('treasures','${t.id}')">削除</button></div></div><p class="font-black text-lg mt-3 whitespace-pre-wrap ${t.isCompleted ? 'line-through' : ''}">${nl2br(t.text)}</p>${t.image ? `<img src="${t.image}" class="mt-4 max-h-56 rounded-2xl border-2 border-slate-200">` : ''}<div class="mt-4 pt-4 border-t-2 border-dashed border-slate-200"><h5 class="text-xs font-black text-slate-500">アクション</h5>${actions || '<p class="text-sm font-bold text-slate-400 mt-2">未登録</p>'}<div class="flex gap-2 mt-3 no-print"><input id="ta-${t.id}" class="input" placeholder="アクションを追加"><button onclick="addTreasureAction('${t.id}')" class="btn-primary rounded-xl px-4 font-black">追加</button></div></div></article>`;
+    }
+
+    function renderApps() {
+      return `${pageTitle('briefcase','アプリ集','作成中・公開済みアプリやツールを管理します。')}
+      <div class="grid lg:grid-cols-12 gap-6"><section class="card p-5 md:p-6 lg:col-span-4"><h3 class="text-xl font-black mb-4">アプリを登録</h3><form onsubmit="addApp(event)" class="space-y-4"><div><label class="label">アプリ名</label><input id="appName" class="input" required></div><div><label class="label">状態</label><select id="appStatus" class="input">${options(['アイデア段階','開発中','完成/公開済み','改善中'], 'アイデア段階')}</select></div><div><label class="label">URL</label><input id="appUrl" type="url" class="input" placeholder="https://"></div><div><label class="label">説明・収益化メモ</label><textarea id="appDesc" class="input min-h-32 resize-y"></textarea></div><div><label class="label">次の一手</label><input id="appNext" class="input"></div><button class="btn-primary rounded-xl py-3 w-full font-black">保存する</button></form></section>
+      <section class="card p-5 md:p-6 lg:col-span-8"><h3 class="text-xl font-black mb-4">アプリ一覧</h3><div class="grid md:grid-cols-2 gap-4">${state.apps.map(appCard).join('') || empty('アプリがありません')}</div></section></div>`;
+    }
+
+    function appCard(a) {
+      return `<article class="soft-card p-5"><div class="flex justify-between"><span class="inline-block px-3 py-1 rounded-full bg-purple-50 text-purple-800 border border-purple-200 text-xs font-black">${esc(a.status)}</span><button class="no-print text-rose-600 font-black text-xs" onclick="removeItem('apps','${a.id}')">削除</button></div><h4 class="font-black text-lg mt-3">${esc(a.name)}</h4>${a.url ? `<a href="${esc(a.url)}" target="_blank" class="text-sm font-black text-blue-700 underline break-all">${esc(a.url)}</a>` : ''}<p class="font-bold text-slate-700 mt-3 whitespace-pre-wrap">${nl2br(a.description)}</p>${a.nextAction ? `<p class="mt-3 text-sm font-black bg-amber-50 border border-amber-200 rounded-xl p-3">次の一手：${esc(a.nextAction)}</p>` : ''}</article>`;
+    }
+
+    function renderAi() {
+      return `${pageTitle('bot','AI相談','記録した内容をもとに、Gemini APIで整理・提案します。')}
+      <div class="grid lg:grid-cols-12 gap-6"><section class="card p-5 md:p-6 lg:col-span-4"><h3 class="text-xl font-black mb-4">AI設定・相談</h3><div class="p-4 bg-amber-50 border-2 border-amber-200 rounded-2xl mb-4 text-sm font-bold text-amber-900">APIキーはこのブラウザ内だけに保存します。GitHubにキーを直接書かないでください。</div><form onsubmit="saveAiSettings(event)" class="space-y-4"><div><label class="label">Gemini API Key</label><input id="geminiKey" type="password" class="input" value="${esc(state.settings.geminiKey || '')}" placeholder="AIzaSy..."></div><div><label class="label">モデル</label><input id="aiModel" class="input" value="${esc(state.settings.aiModel || 'gemini-2.5-flash')}"></div><button class="btn-primary rounded-xl py-3 w-full font-black">AI設定を保存</button></form><div class="mt-6"><label class="label">相談モード</label><select id="aiMode" class="input">${Object.entries(aiModes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select><button onclick="askAi()" class="btn-amber rounded-xl py-3 w-full font-black mt-3">AIに相談する</button></div></section><section class="card p-5 md:p-6 lg:col-span-8"><h3 class="text-xl font-black mb-4">相談結果</h3><div id="aiResult" class="bg-slate-50 border-2 border-slate-200 rounded-2xl min-h-96 p-5 font-bold leading-relaxed whitespace-pre-wrap">ここに結果が表示されます。</div></section></div>`;
+    }
+
+    function renderBackup() {
+      const last = state.meta.lastBackupAt ? fmtDate(state.meta.lastBackupAt) : '未実行';
+      return `${pageTitle('shield-check','バックアップ','データ消失を防ぐための保存・復元・CSV出力です。')}
+      <div class="grid lg:grid-cols-12 gap-6"><section class="card p-5 md:p-6 lg:col-span-5"><h3 class="text-xl font-black mb-4">保存状態</h3><div class="space-y-3">${statLine('保存サイズ', estimateSizeMb() + ' MB')}${statLine('最終更新', fmtDate(state.meta.updatedAt))}${statLine('最終自動バックアップ', last)}${statLine('旧データ移行', state.meta.migratedFromLegacy ? '済み' : 'なし')}</div><div class="mt-5 p-4 bg-rose-50 border-2 border-rose-200 rounded-2xl text-sm font-bold text-rose-900">画像をたくさん入れるとブラウザ保存容量を超えることがあります。大事な記録は定期的にJSON保存してください。</div></section><section class="card p-5 md:p-6 lg:col-span-7"><h3 class="text-xl font-black mb-4">バックアップ操作</h3><div class="grid md:grid-cols-2 gap-3"><button onclick="exportJson()" class="btn-primary rounded-xl py-3 font-black">JSONで全部保存</button><button onclick="exportCsv()" class="rounded-xl py-3 font-black bg-emerald-100 text-emerald-800 border-2 border-emerald-300">CSVで一覧保存</button><label class="rounded-xl py-3 font-black bg-blue-100 text-blue-800 border-2 border-blue-300 text-center cursor-pointer">JSONを復元<input type="file" accept="application/json,.json" class="hidden" onchange="importJson(event)"></label><button onclick="restoreLatestBackup()" class="rounded-xl py-3 font-black bg-amber-100 text-amber-800 border-2 border-amber-300">自動バックアップから復元</button></div><button onclick="validateData()" class="mt-5 w-full rounded-xl py-3 font-black bg-slate-100 text-slate-800 border-2 border-slate-300">データ点検</button></section></div>`;
+    }
+
+    function statLine(label, value) { return `<div class="flex justify-between gap-4 p-4 bg-slate-50 border border-slate-200 rounded-xl font-black"><span class="text-slate-500">${esc(label)}</span><span>${esc(value)}</span></div>`; }
+
+    function genericCard(collection, id, badge, title, memo, nextAction, sub) {
+      return `<article class="soft-card p-4"><div class="flex justify-between gap-3"><div>${badge ? `<span class="inline-block px-3 py-1 rounded-full bg-slate-50 text-slate-800 border border-slate-200 text-xs font-black">${esc(badge)}</span>` : ''}${sub ? `<span class="text-xs font-bold text-slate-500 ml-2 break-all">${esc(sub)}</span>` : ''}</div><button class="no-print text-rose-600 font-black text-xs" onclick="removeItem('${collection}','${id}')">削除</button></div><h4 class="font-black text-lg mt-3">${esc(title)}</h4>${memo ? `<p class="font-bold text-slate-700 mt-3 whitespace-pre-wrap">${nl2br(memo)}</p>` : ''}${nextAction ? `<p class="mt-3 text-sm font-black bg-amber-50 border border-amber-200 rounded-xl p-3">次の一手：${esc(nextAction)}</p>` : ''}</article>`;
+    }
+
+    function empty(text) { return `<div class="p-8 bg-slate-50 border-2 border-dashed border-slate-300 rounded-2xl text-center font-black text-slate-400">${esc(text)}</div>`; }
+    function options(arr, selected) { return arr.map(v => `<option value="${esc(v)}" ${v === selected ? 'selected' : ''}>${esc(v)}</option>`).join(''); }
+
+    window.addQuickLog = function(e){ e.preventDefault(); const content = $('quickLogContent').value.trim(); if(!content) return; commit(s => s.logs.unshift({ id: makeId(), category: $('quickLogCategory').value, title: '', content, createdAt: nowIso(), updatedAt: nowIso() }), '人生ログに保存しました。'); };
+    window.addLog = function(e){ e.preventDefault(); commit(s => s.logs.unshift({ id: makeId(), category: $('logCategory').value, title: $('logTitle').value.trim(), content: $('logContent').value.trim(), createdAt: nowIso(), updatedAt: nowIso() }), '人生ログを保存しました。'); };
+    window.addGoal = function(e){ e.preventDefault(); commit(s => s.goals.unshift({ id: makeId(), domain: $('goalDomain').value, title: $('goalTitle').value.trim(), why: $('goalWhy').value.trim(), targetDate: $('goalTargetDate').value, progress: 0, status: '進行中', nextAction: $('goalNext').value.trim(), createdAt: nowIso(), updatedAt: nowIso() }), '目標を保存しました。'); };
+    window.addHabit = function(e){ e.preventDefault(); commit(s => s.habits.unshift({ id: makeId(), name: $('habitName').value.trim(), domain: $('habitDomain').value, memo: $('habitMemo').value.trim(), checks: [], createdAt: nowIso(), updatedAt: nowIso() }), '習慣を保存しました。'); };
+    window.addHealth = function(e){ e.preventDefault(); commit(s => s.health.unshift({ id: makeId(), date: $('healthDate').value || today(), bpHigh: $('bpHigh').value, bpLow: $('bpLow').value, sleep: $('sleep').value.trim(), eyeNote: $('eyeNote').value.trim(), backNote: $('backNote').value.trim(), memo: $('healthMemo').value.trim(), createdAt: nowIso(), updatedAt: nowIso() }), '健康メモを保存しました。'); };
+    window.addMoney = function(e){ e.preventDefault(); commit(s => s.money.unshift({ id: makeId(), type: $('moneyType').value, title: $('moneyTitle').value.trim(), amount: $('moneyAmount').value, memo: $('moneyMemo').value.trim(), nextAction: $('moneyNext').value.trim(), createdAt: nowIso(), updatedAt: nowIso() }), '収益メモを保存しました。'); };
+    window.addLearning = function(e){ e.preventDefault(); commit(s => s.learning.unshift({ id: makeId(), topic: $('learnTopic').value.trim(), resource: $('learnResource').value.trim(), progress: $('learnProgress').value, memo: $('learnMemo').value.trim(), nextAction: $('learnNext').value.trim(), createdAt: nowIso(), updatedAt: nowIso() }), '学びを保存しました。'); };
+    window.addRelationship = function(e){ e.preventDefault(); commit(s => s.relationships.unshift({ id: makeId(), name: $('relName').value.trim(), relation: $('relType').value.trim(), memo: $('relMemo').value.trim(), nextAction: $('relAction').value.trim(), createdAt: nowIso(), updatedAt: nowIso() }), '人間関係メモを保存しました。'); };
+    window.addApp = function(e){ e.preventDefault(); commit(s => s.apps.unshift({ id: makeId(), name: $('appName').value.trim(), status: $('appStatus').value, url: $('appUrl').value.trim(), description: $('appDesc').value.trim(), nextAction: $('appNext').value.trim(), createdAt: nowIso(), updatedAt: nowIso() }), 'アプリを保存しました。'); };
+
+    window.addTreasure = async function(e){
+      e.preventDefault();
+      const file = $('treasureImage').files[0];
+      let image = '';
+      if (file) image = await compressImage(file);
+      const firstAction = $('treasureAction').value.trim();
+      commit(s => s.treasures.unshift({ id: makeId(), type: $('treasureType').value, text: $('treasureText').value.trim(), image, isCompleted: false, actions: firstAction ? [{ id: makeId(), text: firstAction, completed: false }] : [], createdAt: nowIso(), updatedAt: nowIso() }), '宝の地図に保存しました。');
+    };
+
+    function compressImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => {
+          const img = new Image();
+          img.onerror = reject;
+          img.onload = () => {
+            const max = 900;
+            let { width, height } = img;
+            if (width > height && width > max) { height = Math.round(height * max / width); width = max; }
+            if (height >= width && height > max) { width = Math.round(width * max / height); height = max; }
+            const canvas = document.createElement('canvas');
+            canvas.width = width; canvas.height = height;
+            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.62));
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    window.removeItem = function(collection, id){
+      if (!confirm('削除しますか？')) return;
+      commit(s => { s[collection] = s[collection].filter(item => item.id !== id); }, '削除しました。');
+    };
+    window.updateProgress = function(collection, id, value){
+      commit(s => { const item = s[collection].find(i => i.id === id); if(item) { item.progress = Number(value); item.updatedAt = nowIso(); } }, '進捗を更新しました。');
+    };
+    window.toggleHabit = function(id){
+      const date = today();
+      commit(s => { const h = s.habits.find(i => i.id === id); if(!h) return; h.checks = h.checks || []; h.checks = h.checks.includes(date) ? h.checks.filter(d => d !== date) : [...h.checks, date]; h.updatedAt = nowIso(); }, '習慣チェックを更新しました。');
+    };
+    window.toggleComplete = function(collection, id){ commit(s => { const item = s[collection].find(i => i.id === id); if(item) item.isCompleted = !item.isCompleted; }, '完了状態を更新しました。'); };
+    window.addTreasureAction = function(id){ const input = $('ta-' + id); const text = input.value.trim(); if(!text) return; commit(s => { const t = s.treasures.find(i => i.id === id); if(t) { t.actions = t.actions || []; t.actions.push({ id: makeId(), text, completed: false }); } }, 'アクションを追加しました。'); };
+    window.toggleTreasureAction = function(tid, aid){ commit(s => { const t = s.treasures.find(i => i.id === tid); const a = t && (t.actions || []).find(x => x.id === aid); if(a) a.completed = !a.completed; }, 'アクションを更新しました。'); };
+
+    window.filterLogs = function(){ const q = $('logSearch').value.trim().toLowerCase(); const filtered = state.logs.filter(l => [l.category,l.title,l.content].join(' ').toLowerCase().includes(q)); $('logsList').innerHTML = renderLogList(filtered); lucide.createIcons(); };
+
+    window.saveAiSettings = function(e){ e.preventDefault(); commit(s => { s.settings.geminiKey = $('geminiKey').value.trim(); s.settings.aiModel = $('aiModel').value.trim() || 'gemini-2.5-flash'; }, 'AI設定を保存しました。'); };
+
+    window.askAi = async function(){
+      const result = $('aiResult');
+      const key = state.settings.geminiKey;
+      if(!key){ notify('先にGemini APIキーを保存してください。', 'warn'); return; }
+      const modeKey = $('aiMode').value;
+      const modeName = aiModes[modeKey] || '相談';
+      result.textContent = 'AIが整理中です...';
+      const context = JSON.stringify(makeAiContext(), null, 2).slice(0, 18000);
+      const systemPrompt = `あなたは人生整理と小さな行動提案に強い日本語の伴走者です。ユーザーの記録を否定せず、現実的で具体的に整理します。医療・法律・投資は断定せず、必要に応じて専門家相談を勧めます。出力は、1) 現状整理 2) 良い兆し 3) 注意点 4) 今日の一歩 5) 最後の一言 の順番で、読みやすく簡潔にしてください。`;
+      const prompt = `相談モード: ${modeName}\n\n以下はユーザー自身が記録した人生データです。\n${context}`;
+      try {
+        const model = encodeURIComponent(state.settings.aiModel || 'gemini-2.5-flash');
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: systemPrompt }] } }) });
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        const json = await res.json();
+        const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '結果を取得できませんでした。';
+        result.textContent = text;
+      } catch (e) {
+        console.error(e);
+        result.textContent = 'AI相談に失敗しました。APIキー、モデル名、ブラウザ通信制限を確認してください。';
+        notify('AI相談に失敗しました。', 'danger');
+      }
+    };
+
+    function makeAiContext() {
+      const recent = arr => [...arr].sort((a,b)=>new Date(b.createdAt || b.date)-new Date(a.createdAt || a.date)).slice(0,12);
+      return { goals: state.goals, recentLogs: recent(state.logs), health: recent(state.health), money: recent(state.money), learning: recent(state.learning), relationships: recent(state.relationships), treasures: state.treasures, apps: state.apps, habits: state.habits };
+    }
+
+    window.exportJson = function(){
+      const payload = JSON.stringify(state, null, 2);
+      downloadFile(`life-compass-backup-${today()}.json`, payload, 'application/json');
+      notify('JSONバックアップを書き出しました。', 'success');
+    };
+    window.exportCsv = function(){
+      const rows = [['collection','date','category','title','content','status','nextAction','amount']];
+      state.logs.forEach(x=>rows.push(['logs',x.createdAt,x.category,x.title,x.content,'','','']));
+      state.goals.forEach(x=>rows.push(['goals',x.createdAt,x.domain,x.title,x.why,x.status,x.nextAction,'']));
+      state.health.forEach(x=>rows.push(['health',x.date,'健康メモ','健康記録',`血圧:${x.bpHigh}/${x.bpLow}\n睡眠:${x.sleep}\n目:${x.eyeNote}\n腰:${x.backNote}\n${x.memo}`,'','','']));
+      state.money.forEach(x=>rows.push(['money',x.createdAt,x.type,x.title,x.memo,'',x.nextAction,x.amount||'']));
+      state.learning.forEach(x=>rows.push(['learning',x.createdAt,'学び',x.topic,x.memo,`進捗${x.progress||0}%`,x.nextAction,'']));
+      state.relationships.forEach(x=>rows.push(['relationships',x.createdAt,x.relation,x.name,x.memo,'',x.nextAction,'']));
+      state.treasures.forEach(x=>rows.push(['treasures',x.createdAt,x.type,x.text,(x.actions||[]).map(a=>`${a.completed?'[済]':'[未]'}${a.text}`).join('\n'),x.isCompleted?'完了':'未完了','','']));
+      state.apps.forEach(x=>rows.push(['apps',x.createdAt,x.status,x.name,`${x.description}\n${x.url||''}`,'',x.nextAction,'']));
+      const csv = rows.map(r => r.map(csvCell).join(',')).join('\n');
+      downloadFile(`life-compass-export-${today()}.csv`, '\ufeff' + csv, 'text/csv;charset=utf-8');
+      notify('CSVを書き出しました。', 'success');
+    };
+    function csvCell(v){ return '"' + String(v ?? '').replace(/"/g,'""') + '"'; }
+    function downloadFile(name, content, type){ const blob = new Blob([content], { type }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href); }
+
+    window.importJson = function(e){
+      const file = e.target.files[0]; if(!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const imported = normalizeState(JSON.parse(reader.result));
+          if(!confirm('現在のデータを、選択したJSONで置き換えます。実行しますか？')) return;
+          persistRaw(imported, true); render();
+        } catch (err) { notify('JSONの読み込みに失敗しました。ファイル形式を確認してください。', 'danger'); }
+      };
+      reader.readAsText(file);
+    };
+    window.restoreLatestBackup = function(){ const backup = readJsonStorage(BACKUP_KEY); if(!backup){ notify('自動バックアップが見つかりません。', 'warn'); return; } if(confirm('自動バックアップから復元しますか？')) { persistRaw(normalizeState(backup), true); render(); } };
+    window.validateData = function(){ const problems = []; for(const key of ['goals','logs','habits','health','money','learning','relationships','treasures','apps']) if(!Array.isArray(state[key])) problems.push(key + ' が配列ではありません'); notify(problems.length ? '点検結果: ' + problems.join(' / ') : '点検OKです。データ構造に大きな問題は見つかりません。', problems.length ? 'danger' : 'success', 6000); };
+
+    $('quickExportBtn').addEventListener('click', exportJson);
+    $('printBtn').addEventListener('click', () => window.print());
+
+    render();
+    if (state.meta.migratedFromLegacy) notify('旧バージョンのデータをLife Compassへ移行しました。念のためJSON保存を実行してください。', 'info', 7000);
+  </script>
+</body>
+</html>
