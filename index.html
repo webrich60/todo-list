@@ -171,37 +171,89 @@
               "todos_corrupted_backup",
               localStorage.getItem("todos") || "",
             );
+          } catch (_) {}
+          try {
             localStorage.removeItem("todos");
           } catch (_) {}
           return [];
         }
       };
 
-      const writeLocalTodos = (items) => {
-        try {
-          localStorage.setItem("todos", JSON.stringify(items));
-          return items;
-        } catch (error) {
-          console.error("端末データの保存エラー:", error);
-          // 写真だけを外し、タスク本文・期限・完了状態は必ず救済する。
-          const withoutImages = items.map((item) => ({
-            ...item,
-            imageUrl: null,
-          }));
-          try {
-            localStorage.setItem("todos", JSON.stringify(withoutImages));
-            alert(
-              "端末の保存容量が上限に達したため、添付写真を外してタスク本文を保存しました。今後追加する写真は自動圧縮されます。",
-            );
-            return withoutImages;
-          } catch (fallbackError) {
-            console.error("軽量データの保存エラー:", fallbackError);
-            alert(
-              "端末の保存容量が不足しています。不要なサイトデータを整理してから、もう一度お試しください。",
-            );
-            return null;
+      const TODO_DB_NAME = "webrich_todo_database";
+      const TODO_DB_STORE = "app_state";
+
+      const openTodoDatabase = () =>
+        new Promise((resolve, reject) => {
+          if (!window.indexedDB) {
+            reject(new Error("このブラウザは大容量保存に対応していません。"));
+            return;
           }
+          const request = window.indexedDB.open(TODO_DB_NAME, 1);
+          request.onerror = () => reject(request.error);
+          request.onupgradeneeded = () => {
+            const database = request.result;
+            if (!database.objectStoreNames.contains(TODO_DB_STORE)) {
+              database.createObjectStore(TODO_DB_STORE);
+            }
+          };
+          request.onsuccess = () => resolve(request.result);
+        });
+
+      const readIndexedTodos = async () => {
+        const database = await openTodoDatabase();
+        try {
+          return await new Promise((resolve, reject) => {
+            const transaction = database.transaction(TODO_DB_STORE, "readonly");
+            const request = transaction.objectStore(TODO_DB_STORE).get("todos");
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const value = request.result;
+              resolve(Array.isArray(value) ? value.map(normalizeTodo) : []);
+            };
+          });
+        } finally {
+          database.close();
         }
+      };
+
+      const saveIndexedTodos = async (items) => {
+        const database = await openTodoDatabase();
+        try {
+          await new Promise((resolve, reject) => {
+            const transaction = database.transaction(
+              TODO_DB_STORE,
+              "readwrite",
+            );
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
+            transaction.oncomplete = () => resolve();
+            transaction.objectStore(TODO_DB_STORE).put(items, "todos");
+          });
+        } finally {
+          database.close();
+        }
+      };
+
+      let databaseErrorShown = false;
+      const writeLocalTodos = (items) => {
+        saveIndexedTodos(items)
+          .then(() => {
+            // 大容量DBへの保存成功後にだけ、旧localStorageを削除する。
+            try {
+              localStorage.removeItem("todos");
+              localStorage.removeItem("todos_corrupted_backup");
+            } catch (_) {}
+          })
+          .catch((error) => {
+            console.error("大容量データベースの保存エラー:", error);
+            if (!databaseErrorShown) {
+              databaseErrorShown = true;
+              alert(
+                "大容量データベースへの保存に失敗しました。ページを再読み込みして、もう一度お試しください。",
+              );
+            }
+          });
+        return items;
       };
 
       const compressImageSource = (source) =>
@@ -315,6 +367,48 @@
         const [newPriority, setNewPriority] = useState("中");
         const [newMailNotify, setNewMailNotify] = useState(false);
 
+        // 旧localStorageから大容量IndexedDBへ、安全に一度だけ移行する。
+        useEffect(() => {
+          let cancelled = false;
+          const initializeDatabase = async () => {
+            try {
+              const legacyTodos = todos;
+              if (legacyTodos.length > 0) {
+                await saveIndexedTodos(legacyTodos);
+                if (!cancelled) {
+                  try {
+                    localStorage.removeItem("todos");
+                    localStorage.removeItem("todos_corrupted_backup");
+                  } catch (_) {}
+                }
+                return;
+              }
+
+              const databaseTodos = await readIndexedTodos();
+              if (!cancelled && databaseTodos.length > 0) {
+                setTodos((currentTodos) => {
+                  if (currentTodos.length === 0) return databaseTodos;
+                  const databaseById = new Map(
+                    databaseTodos.map((todo) => [todo.id, todo]),
+                  );
+                  return currentTodos.map((todo) => {
+                    const savedTodo = databaseById.get(todo.id);
+                    return savedTodo && savedTodo.imageUrl
+                      ? { ...todo, imageUrl: savedTodo.imageUrl }
+                      : todo;
+                  });
+                });
+              }
+            } catch (error) {
+              console.error("大容量データベースの初期化エラー:", error);
+            }
+          };
+          initializeDatabase();
+          return () => {
+            cancelled = true;
+          };
+        }, []);
+
         useEffect(() => {
           loadTodosFromSpreadsheet(true);
         }, [gasUrl]);
@@ -402,10 +496,20 @@
                 ) {
                   return prevTodos;
                 }
+                // 写真は端末DBに保存するため、クラウド再読込時もIDで引き継ぐ。
+                const previousById = new Map(
+                  prevTodos.map((todo) => [todo.id, todo]),
+                );
+                const mergedData = normalizedData.map((todo) => {
+                  const previous = previousById.get(todo.id);
+                  return previous && previous.imageUrl
+                    ? { ...todo, imageUrl: previous.imageUrl }
+                    : todo;
+                });
                 const prevStr = JSON.stringify(prevTodos);
-                const nextStr = JSON.stringify(normalizedData);
+                const nextStr = JSON.stringify(mergedData);
                 if (prevStr !== nextStr) {
-                  return writeLocalTodos(normalizedData) || normalizedData;
+                  return writeLocalTodos(mergedData) || mergedData;
                 }
                 return prevTodos;
               });
@@ -1120,6 +1224,9 @@
                     <i className="fa-solid fa-calendar-check text-[#98C4A6]"></i>{" "}
                     TODO管理
                   </h1>
+                  <span className="text-[9px] font-black text-slate-400 tracking-widest">
+                    v2.2・大容量保存対応
+                  </span>
 
                   {gasUrl && (
                     <span className="text-[10px] mt-1 font-bold flex items-center gap-1">
@@ -1395,4 +1502,3 @@
     </script>
   </body>
 </html>
-
