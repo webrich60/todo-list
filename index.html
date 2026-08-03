@@ -180,15 +180,78 @@
       const writeLocalTodos = (items) => {
         try {
           localStorage.setItem("todos", JSON.stringify(items));
-          return true;
+          return items;
         } catch (error) {
           console.error("端末データの保存エラー:", error);
-          alert(
-            "端末の保存容量が不足しています。大きな写真を減らしてから、もう一度お試しください。",
-          );
-          return false;
+          // 写真だけを外し、タスク本文・期限・完了状態は必ず救済する。
+          const withoutImages = items.map((item) => ({
+            ...item,
+            imageUrl: null,
+          }));
+          try {
+            localStorage.setItem("todos", JSON.stringify(withoutImages));
+            alert(
+              "端末の保存容量が上限に達したため、添付写真を外してタスク本文を保存しました。今後追加する写真は自動圧縮されます。",
+            );
+            return withoutImages;
+          } catch (fallbackError) {
+            console.error("軽量データの保存エラー:", fallbackError);
+            alert(
+              "端末の保存容量が不足しています。不要なサイトデータを整理してから、もう一度お試しください。",
+            );
+            return null;
+          }
         }
       };
+
+      const compressImageSource = (source) =>
+        new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onerror = () =>
+            reject(new Error("写真の形式を確認できませんでした。"));
+          image.onload = () => {
+            try {
+              const maxSide = 1200;
+              const scale = Math.min(
+                1,
+                maxSide / Math.max(image.width, image.height),
+              );
+              const width = Math.max(1, Math.round(image.width * scale));
+              const height = Math.max(1, Math.round(image.height * scale));
+              const canvas = document.createElement("canvas");
+              canvas.width = width;
+              canvas.height = height;
+              const context = canvas.getContext("2d");
+              context.fillStyle = "#ffffff";
+              context.fillRect(0, 0, width, height);
+              context.drawImage(image, 0, 0, width, height);
+
+              let result = canvas.toDataURL("image/jpeg", 0.72);
+              if (result.length > 800000) {
+                result = canvas.toDataURL("image/jpeg", 0.52);
+              }
+              resolve(result);
+            } catch (error) {
+              reject(error);
+            }
+          };
+          image.src = source;
+        });
+
+      const compressImageFile = (file) =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () =>
+            reject(new Error("写真を読み込めませんでした。"));
+          reader.onload = async () => {
+            try {
+              resolve(await compressImageSource(reader.result));
+            } catch (error) {
+              reject(error);
+            }
+          };
+          reader.readAsDataURL(file);
+        });
 
       class AppErrorBoundary extends React.Component {
         constructor(props) {
@@ -247,6 +310,7 @@
         const [newDueDate, setNewDueDate] = useState("");
         const [newEndDate, setNewEndDate] = useState("");
         const [newImage, setNewImage] = useState(null);
+        const [isCompressingImage, setIsCompressingImage] = useState(false);
         const [newColor, setNewColor] = useState("blue");
         const [newPriority, setNewPriority] = useState("中");
         const [newMailNotify, setNewMailNotify] = useState(false);
@@ -266,6 +330,43 @@
         useEffect(() => {
           const timer = setInterval(() => setCurrentTime(new Date()), 60000);
           return () => clearInterval(timer);
+        }, []);
+
+        // 旧版で保存された大きな写真も、初回起動時に順番に軽量化する。
+        useEffect(() => {
+          let cancelled = false;
+          const migrateExistingImages = async () => {
+            const compressedById = new Map();
+            for (const todo of todos) {
+              if (
+                cancelled ||
+                !todo.imageUrl ||
+                !String(todo.imageUrl).startsWith("data:image/") ||
+                String(todo.imageUrl).length < 250000
+              ) {
+                continue;
+              }
+              try {
+                const compressed = await compressImageSource(todo.imageUrl);
+                compressedById.set(todo.id, compressed);
+              } catch (error) {
+                console.error("既存写真の軽量化エラー:", error);
+              }
+            }
+            if (cancelled || compressedById.size === 0) return;
+            setTodos((currentTodos) => {
+              const migratedTodos = currentTodos.map((todo) =>
+                compressedById.has(todo.id)
+                  ? { ...todo, imageUrl: compressedById.get(todo.id) }
+                  : todo,
+              );
+              return writeLocalTodos(migratedTodos) || migratedTodos;
+            });
+          };
+          migrateExistingImages();
+          return () => {
+            cancelled = true;
+          };
         }, []);
 
         const loadTodosFromSpreadsheet = (isSilent = false) => {
@@ -304,8 +405,7 @@
                 const prevStr = JSON.stringify(prevTodos);
                 const nextStr = JSON.stringify(normalizedData);
                 if (prevStr !== nextStr) {
-                  writeLocalTodos(normalizedData);
-                  return normalizedData;
+                  return writeLocalTodos(normalizedData) || normalizedData;
                 }
                 return prevTodos;
               });
@@ -350,14 +450,24 @@
           setCurrentView("list");
         };
 
-        const handleImageChange = (e) => {
+        const handleImageChange = async (e) => {
           const file = e.target.files[0];
-          if (file) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              setNewImage(reader.result);
-            };
-            reader.readAsDataURL(file);
+          if (!file) return;
+          if (!file.type.startsWith("image/")) {
+            alert("画像ファイルを選択してください。");
+            e.target.value = "";
+            return;
+          }
+          setIsCompressingImage(true);
+          try {
+            const compressed = await compressImageFile(file);
+            setNewImage(compressed);
+          } catch (error) {
+            console.error("写真の圧縮エラー:", error);
+            alert("写真を読み込めませんでした。別の写真でお試しください。");
+          } finally {
+            setIsCompressingImage(false);
+            e.target.value = "";
           }
         };
 
@@ -368,6 +478,7 @@
           setNewDueDate("");
           setNewEndDate("");
           setNewImage(null);
+          setIsCompressingImage(false);
           setNewColor("blue");
           setNewPriority("中");
           setNewMailNotify(false);
@@ -423,12 +534,12 @@
             imageUrl: newImage,
           };
           const updatedTodos = [...todos, newTodo];
-          setTodos(updatedTodos);
           lastLocalMutationRef.current = Date.now();
-          writeLocalTodos(updatedTodos);
+          const storedTodos = writeLocalTodos(updatedTodos) || updatedTodos;
+          setTodos(storedTodos);
           resetForm();
           setCurrentView("list");
-          await exportToSpreadsheet(updatedTodos);
+          await exportToSpreadsheet(storedTodos);
         };
 
         const updateTodo = async (e) => {
@@ -451,9 +562,9 @@
           const updatedTodos = todos.map((t) =>
             t.id === editingTodo.id ? updatedTodo : t,
           );
-          setTodos(updatedTodos);
           lastLocalMutationRef.current = Date.now();
-          writeLocalTodos(updatedTodos);
+          const storedTodos = writeLocalTodos(updatedTodos) || updatedTodos;
+          setTodos(storedTodos);
           const viewToReturn =
             updatedTodo.status === "完了"
               ? "history"
@@ -462,7 +573,7 @@
                 : "list";
           resetForm();
           setCurrentView(viewToReturn);
-          await exportToSpreadsheet(updatedTodos);
+          await exportToSpreadsheet(storedTodos);
         };
 
         const startEdit = (todo) => {
@@ -482,10 +593,10 @@
         const deleteTodo = async (id) => {
           if (window.confirm("完全に削除してもよろしいですか？")) {
             const updatedTodos = todos.filter((todo) => todo.id !== id);
-            setTodos(updatedTodos);
             lastLocalMutationRef.current = Date.now();
-            writeLocalTodos(updatedTodos);
-            await exportToSpreadsheet(updatedTodos);
+            const storedTodos = writeLocalTodos(updatedTodos) || updatedTodos;
+            setTodos(storedTodos);
+            await exportToSpreadsheet(storedTodos);
           }
         };
 
@@ -502,10 +613,10 @@
             }
             return todo;
           });
-          setTodos(updatedTodos);
           lastLocalMutationRef.current = Date.now();
-          writeLocalTodos(updatedTodos);
-          await exportToSpreadsheet(updatedTodos);
+          const storedTodos = writeLocalTodos(updatedTodos) || updatedTodos;
+          setTodos(storedTodos);
+          await exportToSpreadsheet(storedTodos);
         };
 
         const getGoogleCalendarUrl = (todo) => {
@@ -956,6 +1067,12 @@
                   onChange={handleImageChange}
                 />
               </label>
+              {isCompressingImage && (
+                <span className="text-xs font-black text-blue-600 flex items-center gap-2">
+                  <i className="fa-solid fa-spinner animate-spin"></i>
+                  写真を軽量化中…
+                </span>
+              )}
               {newImage && (
                 <div className="relative inline-block">
                   <img
@@ -976,10 +1093,10 @@
 
             <button
               type="submit"
-              disabled={!newTitle.trim()}
+              disabled={!newTitle.trim() || isCompressingImage}
               className="w-full py-4.5 bg-slate-800 text-white font-black text-lg rounded-[2rem] shadow-xl shadow-slate-200 active:scale-95 transition-all disabled:opacity-30 mt-2"
             >
-              {submitLabel}
+              {isCompressingImage ? "写真を軽量化しています…" : submitLabel}
             </button>
           </form>
         );
