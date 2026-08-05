@@ -132,12 +132,17 @@
         const item = raw && typeof raw === "object" ? raw : {};
         const legacyCompleted =
           item.completed === true || item.completed === "TRUE";
-        const allowedStatuses = ["未完了", "チェック済", "完了"];
-        const normalizedStatus = allowedStatuses.includes(item.status)
-          ? item.status
-          : legacyCompleted
+        const rawStatus = String(item.status || "");
+        const allowedStatuses = ["未完了", "完了"];
+        // 旧版の「チェック済」は、現在の仕様では「完了」と同じ扱いにする。
+        const normalizedStatus =
+          rawStatus === "チェック済"
             ? "完了"
-            : "未完了";
+            : allowedStatuses.includes(rawStatus)
+              ? rawStatus
+              : legacyCompleted
+                ? "完了"
+                : "未完了";
         const parsedId = Number(item.id);
         return {
           ...item,
@@ -154,7 +159,57 @@
           mailNotify: item.mailNotify === true || item.mailNotify === "TRUE",
           status: normalizedStatus,
           completedAt: item.completedAt || null,
+          updatedAt: item.updatedAt || item.modifiedAt || "",
         };
+      };
+
+      const updatedTime = (todo) => {
+        const time = new Date(
+          todo && todo.updatedAt ? todo.updatedAt : 0,
+        ).getTime();
+        return Number.isFinite(time) ? time : 0;
+      };
+
+      const mergeLocalAndCloudTodos = (localTodos, cloudTodos) => {
+        const localById = new Map(localTodos.map((todo) => [todo.id, todo]));
+        const cloudIds = new Set();
+        let needsCloudRepair = false;
+
+        const merged = cloudTodos.map((cloudTodo) => {
+          cloudIds.add(cloudTodo.id);
+          const localTodo = localById.get(cloudTodo.id);
+          if (!localTodo) return cloudTodo;
+
+          const localTime = updatedTime(localTodo);
+          const cloudTime = updatedTime(cloudTodo);
+          let selected = cloudTodo;
+
+          if (localTime > cloudTime) {
+            selected = localTodo;
+            needsCloudRepair = true;
+          } else if (
+            localTime === cloudTime &&
+            localTodo.status === "完了" &&
+            cloudTodo.status !== "完了"
+          ) {
+            // 日時のない旧データでは、完了状態を未完了で巻き戻さない。
+            selected = localTodo;
+            needsCloudRepair = true;
+          }
+
+          return localTodo.imageUrl
+            ? { ...selected, imageUrl: localTodo.imageUrl }
+            : selected;
+        });
+
+        localTodos.forEach((localTodo) => {
+          if (!cloudIds.has(localTodo.id) && localTodo.updatedAt) {
+            merged.push(localTodo);
+            needsCloudRepair = true;
+          }
+        });
+
+        return { merged, needsCloudRepair };
       };
 
       const readLocalTodos = () => {
@@ -354,6 +409,8 @@
         const [todos, setTodos] = useState(readLocalTodos);
         const lastLocalMutationRef = useRef(0);
         const requestSequenceRef = useRef(0);
+        const cloudRepairScheduledRef = useRef(false);
+        const latestSyncRef = useRef(0);
 
         const [editingTodo, setEditingTodo] = useState(null);
         const [newType, setNewType] = useState("todo");
@@ -388,15 +445,19 @@
               if (!cancelled && databaseTodos.length > 0) {
                 setTodos((currentTodos) => {
                   if (currentTodos.length === 0) return databaseTodos;
-                  const databaseById = new Map(
-                    databaseTodos.map((todo) => [todo.id, todo]),
+                  const { merged, needsCloudRepair } = mergeLocalAndCloudTodos(
+                    databaseTodos,
+                    currentTodos,
                   );
-                  return currentTodos.map((todo) => {
-                    const savedTodo = databaseById.get(todo.id);
-                    return savedTodo && savedTodo.imageUrl
-                      ? { ...todo, imageUrl: savedTodo.imageUrl }
-                      : todo;
-                  });
+                  if (needsCloudRepair && !cloudRepairScheduledRef.current) {
+                    cloudRepairScheduledRef.current = true;
+                    setTimeout(async () => {
+                      await exportToSpreadsheet(merged);
+                      cloudRepairScheduledRef.current = false;
+                    }, 200);
+                  }
+                  writeLocalTodos(merged);
+                  return merged;
                 });
               }
             } catch (error) {
@@ -496,16 +557,15 @@
                 ) {
                   return prevTodos;
                 }
-                // 写真は端末DBに保存するため、クラウド再読込時もIDで引き継ぐ。
-                const previousById = new Map(
-                  prevTodos.map((todo) => [todo.id, todo]),
-                );
-                const mergedData = normalizedData.map((todo) => {
-                  const previous = previousById.get(todo.id);
-                  return previous && previous.imageUrl
-                    ? { ...todo, imageUrl: previous.imageUrl }
-                    : todo;
-                });
+                const { merged: mergedData, needsCloudRepair } =
+                  mergeLocalAndCloudTodos(prevTodos, normalizedData);
+                if (needsCloudRepair && !cloudRepairScheduledRef.current) {
+                  cloudRepairScheduledRef.current = true;
+                  setTimeout(async () => {
+                    await exportToSpreadsheet(mergedData);
+                    cloudRepairScheduledRef.current = false;
+                  }, 200);
+                }
                 const prevStr = JSON.stringify(prevTodos);
                 const nextStr = JSON.stringify(mergedData);
                 if (prevStr !== nextStr) {
@@ -590,9 +650,12 @@
         };
 
         const exportToSpreadsheet = async (currentTodos) => {
-          if (!gasUrl) return;
+          if (!gasUrl) return false;
+          const syncToken = Date.now() + Math.random();
+          latestSyncRef.current = syncToken;
           setIsSyncing(true);
           setSyncError(false);
+          let saved = false;
           try {
             const exportData = currentTodos.map((t) => ({
               id: t.id,
@@ -606,19 +669,38 @@
               status: t.status || "未完了",
               mailNotify: t.mailNotify || false,
               completedAt: t.completedAt || "",
+              updatedAt: t.updatedAt || "",
             }));
-            await fetch(gasUrl, {
-              method: "POST",
-              mode: "no-cors",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(exportData),
-            });
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 10000);
+              try {
+                await fetch(gasUrl, {
+                  method: "POST",
+                  mode: "no-cors",
+                  cache: "no-store",
+                  headers: { "Content-Type": "text/plain;charset=UTF-8" },
+                  body: JSON.stringify(exportData),
+                  signal: controller.signal,
+                });
+                saved = true;
+                break;
+              } catch (error) {
+                if (attempt === 1) throw error;
+                await new Promise((resolve) => setTimeout(resolve, 800));
+              } finally {
+                clearTimeout(timeoutId);
+              }
+            }
           } catch (error) {
             console.error("同期エラー:", error);
             setSyncError(true);
           } finally {
-            setIsSyncing(false);
+            if (latestSyncRef.current === syncToken) {
+              setIsSyncing(false);
+            }
           }
+          return saved;
         };
 
         const addTodo = async (e) => {
@@ -636,6 +718,7 @@
             mailNotify: newMailNotify,
             status: "未完了",
             imageUrl: newImage,
+            updatedAt: new Date().toISOString(),
           };
           const updatedTodos = [...todos, newTodo];
           lastLocalMutationRef.current = Date.now();
@@ -661,6 +744,7 @@
             priority: newPriority,
             mailNotify: newMailNotify,
             imageUrl: newImage,
+            updatedAt: new Date().toISOString(),
           };
 
           const updatedTodos = todos.map((t) =>
@@ -713,6 +797,7 @@
                 ...todo,
                 status: isDone ? "未完了" : "完了",
                 completedAt: isDone ? null : new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
               };
             }
             return todo;
@@ -1225,7 +1310,7 @@
                     TODO管理
                   </h1>
                   <span className="text-[9px] font-black text-slate-400 tracking-widest">
-                    v2.2・大容量保存対応
+                    v2.4・端末間同期修正
                   </span>
 
                   {gasUrl && (
