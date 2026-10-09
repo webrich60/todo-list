@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TODO管理 - リマインダー＆カレンダー強化版</title>
+    <title>TODO管理 - 日本の祝日対応カレンダー版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link
       rel="stylesheet"
@@ -128,6 +128,253 @@
     <script type="text/babel">
       const { useState, useEffect, useRef } = React;
 
+      const DEFAULT_CATEGORIES = [
+        "未分類",
+        "仕事",
+        "プライベート",
+        "旅行",
+        "観光",
+        "遊び",
+        "外食",
+      ];
+      const CATEGORY_STORAGE_KEY = "todo_categories_v25";
+
+      const normalizeCategories = (values) => {
+        const merged = [...DEFAULT_CATEGORIES, ...(Array.isArray(values) ? values : [])]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
+        return [...new Set(merged)];
+      };
+
+      const readLocalCategories = () => {
+        try {
+          const saved = JSON.parse(localStorage.getItem(CATEGORY_STORAGE_KEY) || "[]");
+          return normalizeCategories(saved);
+        } catch (_) {
+          return [...DEFAULT_CATEGORIES];
+        }
+      };
+
+      const writeLocalCategories = (values) => {
+        const normalized = normalizeCategories(values);
+        try {
+          localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(normalized));
+        } catch (_) {}
+        return normalized;
+      };
+
+      const formatLocalDateKey = (value) => {
+        const date = value instanceof Date ? value : new Date(value);
+        if (isNaN(date.getTime())) return "";
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      };
+
+      const dateKeyToLabel = (key) => {
+        const date = new Date(`${key}T00:00:00`);
+        if (isNaN(date.getTime())) return key;
+        return date.toLocaleDateString("ja-JP", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          weekday: "short",
+        });
+      };
+
+
+      // 日本の祝日判定（祝日法ベース）。外部APIに依存せず、オフラインでも表示できる。
+      // 春分・秋分の計算は1948～2150年を対象とする近似式。
+      const JAPAN_HOLIDAY_CACHE = new Map();
+
+      const nthWeekdayOfMonth = (year, monthIndex, weekday, nth) => {
+        const first = new Date(year, monthIndex, 1);
+        const offset = (7 + weekday - first.getDay()) % 7;
+        return 1 + offset + (nth - 1) * 7;
+      };
+
+      const vernalEquinoxDay = (year) => {
+        if (year <= 1979) {
+          return Math.floor(
+            20.8357 +
+              0.242194 * (year - 1980) -
+              Math.floor((year - 1983) / 4),
+          );
+        }
+        if (year <= 2099) {
+          return Math.floor(
+            20.8431 +
+              0.242194 * (year - 1980) -
+              Math.floor((year - 1980) / 4),
+          );
+        }
+        return Math.floor(
+          21.851 +
+            0.242194 * (year - 1980) -
+            Math.floor((year - 1980) / 4),
+        );
+      };
+
+      const autumnEquinoxDay = (year) => {
+        if (year <= 1979) {
+          return Math.floor(
+            23.2588 +
+              0.242194 * (year - 1980) -
+              Math.floor((year - 1983) / 4),
+          );
+        }
+        if (year <= 2099) {
+          return Math.floor(
+            23.2488 +
+              0.242194 * (year - 1980) -
+              Math.floor((year - 1980) / 4),
+          );
+        }
+        return Math.floor(
+          24.2488 +
+            0.242194 * (year - 1980) -
+            Math.floor((year - 1980) / 4),
+        );
+      };
+
+      const buildJapaneseHolidayMap = (year) => {
+        if (JAPAN_HOLIDAY_CACHE.has(year)) {
+          return JAPAN_HOLIDAY_CACHE.get(year);
+        }
+        const holidays = new Map();
+        const add = (month, day, name) => {
+          const key = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          holidays.set(key, name);
+        };
+
+        // 国民の祝日（現行制度を中心に、名称・日付変更も反映）
+        if (year >= 1949) add(1, 1, "元日");
+        if (year >= 2000) {
+          add(1, nthWeekdayOfMonth(year, 0, 1, 2), "成人の日");
+        } else if (year >= 1949) {
+          add(1, 15, "成人の日");
+        }
+        if (year >= 1967) add(2, 11, "建国記念の日");
+        if (year >= 2020) {
+          add(2, 23, "天皇誕生日");
+        } else if (year >= 1989 && year <= 2018) {
+          add(12, 23, "天皇誕生日");
+        }
+        if (year >= 1949 && year <= 2150) {
+          add(3, vernalEquinoxDay(year), "春分の日");
+        }
+
+        if (year >= 2007) {
+          add(4, 29, "昭和の日");
+        } else if (year >= 1989) {
+          add(4, 29, "みどりの日");
+        } else if (year >= 1949) {
+          add(4, 29, "天皇誕生日");
+        }
+        if (year >= 1949) add(5, 3, "憲法記念日");
+        if (year >= 2007) add(5, 4, "みどりの日");
+        if (year >= 1949) add(5, 5, "こどもの日");
+
+        if (year === 2020) {
+          add(7, 23, "海の日");
+        } else if (year === 2021) {
+          add(7, 22, "海の日");
+        } else if (year >= 2003) {
+          add(7, nthWeekdayOfMonth(year, 6, 1, 3), "海の日");
+        } else if (year >= 1996) {
+          add(7, 20, "海の日");
+        }
+
+        if (year === 2020) {
+          add(8, 10, "山の日");
+        } else if (year === 2021) {
+          add(8, 8, "山の日");
+        } else if (year >= 2016) {
+          add(8, 11, "山の日");
+        }
+
+        if (year >= 2003) {
+          add(9, nthWeekdayOfMonth(year, 8, 1, 3), "敬老の日");
+        } else if (year >= 1966) {
+          add(9, 15, "敬老の日");
+        }
+        if (year >= 1948 && year <= 2150) {
+          add(9, autumnEquinoxDay(year), "秋分の日");
+        }
+
+        if (year === 2020) {
+          add(7, 24, "スポーツの日");
+        } else if (year === 2021) {
+          add(7, 23, "スポーツの日");
+        } else if (year >= 2000) {
+          add(10, nthWeekdayOfMonth(year, 9, 1, 2), year >= 2020 ? "スポーツの日" : "体育の日");
+        } else if (year >= 1966) {
+          add(10, 10, "体育の日");
+        }
+        if (year >= 1948) add(11, 3, "文化の日");
+        if (year >= 1948) add(11, 23, "勤労感謝の日");
+
+        // 皇室行事に伴う臨時の国民の祝日
+        if (year === 1990) add(11, 12, "即位礼正殿の儀");
+        if (year === 1993) add(6, 9, "皇太子徳仁親王の結婚の儀");
+        if (year === 2019) {
+          add(5, 1, "天皇の即位の日");
+          add(10, 22, "即位礼正殿の儀");
+        }
+
+        // 国民の休日：前日・翌日が祝日に挟まれた平日（1986年以降）
+        if (year >= 1986) {
+          const start = new Date(year, 0, 2);
+          const end = new Date(year, 11, 30);
+          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            const key = formatLocalDateKey(d);
+            if (holidays.has(key) || d.getDay() === 0) continue;
+            const prev = new Date(d);
+            const next = new Date(d);
+            prev.setDate(prev.getDate() - 1);
+            next.setDate(next.getDate() + 1);
+            if (
+              holidays.has(formatLocalDateKey(prev)) &&
+              holidays.has(formatLocalDateKey(next))
+            ) {
+              holidays.set(key, "国民の休日");
+            }
+          }
+        }
+
+        // 振替休日。2007年以降は次の祝日でない日まで繰り越す。
+        if (year >= 1973) {
+          const originalEntries = [...holidays.entries()];
+          originalEntries.forEach(([key]) => {
+            const holidayDate = new Date(`${key}T00:00:00`);
+            if (holidayDate.getDay() !== 0) return;
+            let substitute = new Date(holidayDate);
+            substitute.setDate(substitute.getDate() + 1);
+            if (year < 2007) {
+              const substituteKey = formatLocalDateKey(substitute);
+              if (!holidays.has(substituteKey)) {
+                holidays.set(substituteKey, "振替休日");
+              }
+              return;
+            }
+            while (holidays.has(formatLocalDateKey(substitute))) {
+              substitute.setDate(substitute.getDate() + 1);
+            }
+            holidays.set(formatLocalDateKey(substitute), "振替休日");
+          });
+        }
+
+        JAPAN_HOLIDAY_CACHE.set(year, holidays);
+        return holidays;
+      };
+
+      const getJapaneseHolidayName = (date) => {
+        if (!(date instanceof Date) || isNaN(date.getTime())) return "";
+        const map = buildJapaneseHolidayMap(date.getFullYear());
+        return map.get(formatLocalDateKey(date)) || "";
+      };
+
       const normalizeTodo = (raw, index = 0) => {
         const item = raw && typeof raw === "object" ? raw : {};
         const legacyCompleted =
@@ -150,6 +397,7 @@
           type: item.type === "memo" ? "memo" : "todo",
           title: String(item.title || ""),
           description: String(item.description || ""),
+          category: String(item.category || "未分類").trim() || "未分類",
           dueDate: item.dueDate || null,
           endDate: item.endDate || null,
           color: item.color || "blue",
@@ -423,6 +671,16 @@
         const [newColor, setNewColor] = useState("blue");
         const [newPriority, setNewPriority] = useState("中");
         const [newMailNotify, setNewMailNotify] = useState(false);
+        const [newCategory, setNewCategory] = useState("未分類");
+        const [categories, setCategories] = useState(readLocalCategories);
+        const [categoryDraft, setCategoryDraft] = useState("");
+        const [calendarCursor, setCalendarCursor] = useState(() => {
+          const now = new Date();
+          return new Date(now.getFullYear(), now.getMonth(), 1);
+        });
+        const [selectedDateKey, setSelectedDateKey] = useState(() =>
+          formatLocalDateKey(new Date()),
+        );
 
         // 旧localStorageから大容量IndexedDBへ、安全に一度だけ移行する。
         useEffect(() => {
@@ -473,6 +731,24 @@
         useEffect(() => {
           loadTodosFromSpreadsheet(true);
         }, [gasUrl]);
+
+        useEffect(() => {
+          if (!gasUrl) return;
+          loadCategoriesFromSpreadsheet();
+        }, [gasUrl]);
+
+        useEffect(() => {
+          const categoriesFromTodos = todos
+            .map((todo) => todo.category)
+            .filter(Boolean);
+          if (!categoriesFromTodos.length) return;
+          setCategories((current) => {
+            const merged = normalizeCategories([...current, ...categoriesFromTodos]);
+            return JSON.stringify(merged) === JSON.stringify(current)
+              ? current
+              : writeLocalCategories(merged);
+          });
+        }, [todos]);
 
         useEffect(() => {
           if (!gasUrl) return;
@@ -607,6 +883,63 @@
           document.body.appendChild(script);
         };
 
+        const loadCategoriesFromSpreadsheet = () => {
+          if (!gasUrl) return;
+          const callbackName = "gasCategoryCallback_" + Date.now();
+          let finished = false;
+          const cleanup = () => {
+            delete window[callbackName];
+            const scriptEl = document.getElementById(callbackName);
+            if (scriptEl) scriptEl.remove();
+          };
+          window[callbackName] = (data) => {
+            finished = true;
+            if (Array.isArray(data)) {
+              setCategories((current) =>
+                writeLocalCategories([...current, ...data]),
+              );
+            }
+            cleanup();
+          };
+          const script = document.createElement("script");
+          script.id = callbackName;
+          const separator = gasUrl.includes("?") ? "&" : "?";
+          script.src = `${gasUrl}${separator}action=categories&callback=${callbackName}&_=${Date.now()}`;
+          script.onerror = cleanup;
+          setTimeout(() => {
+            if (!finished) cleanup();
+          }, 8000);
+          document.body.appendChild(script);
+        };
+
+        const saveCategoriesToSpreadsheet = async (nextCategories) => {
+          if (!gasUrl) return;
+          try {
+            await fetch(gasUrl, {
+              method: "POST",
+              mode: "no-cors",
+              cache: "no-store",
+              headers: { "Content-Type": "text/plain;charset=UTF-8" },
+              body: JSON.stringify({
+                action: "saveCategories",
+                categories: normalizeCategories(nextCategories),
+              }),
+            });
+          } catch (error) {
+            console.error("カテゴリ同期エラー:", error);
+          }
+        };
+
+        const addCategory = async () => {
+          const name = categoryDraft.trim();
+          if (!name) return;
+          const nextCategories = writeLocalCategories([...categories, name]);
+          setCategories(nextCategories);
+          setNewCategory(name);
+          setCategoryDraft("");
+          await saveCategoriesToSpreadsheet(nextCategories);
+        };
+
         const saveGasUrl = (url) => {
           setGasUrl(url.trim());
           localStorage.setItem("gas_url", url.trim());
@@ -646,6 +979,8 @@
           setNewColor("blue");
           setNewPriority("中");
           setNewMailNotify(false);
+          setNewCategory("未分類");
+          setCategoryDraft("");
           setEditingTodo(null);
         };
 
@@ -662,6 +997,7 @@
               type: t.type || "todo",
               title: t.title,
               description: t.description || "",
+              category: t.category || "未分類",
               priority: t.priority || "中",
               dueDate: t.dueDate || "",
               endDate: t.endDate || "",
@@ -711,6 +1047,7 @@
             type: newType,
             title: newTitle.trim(),
             description: newDescription.trim(),
+            category: newCategory || "未分類",
             dueDate: newDueDate || null,
             endDate: newEndDate || null,
             color: newColor,
@@ -738,6 +1075,7 @@
             type: newType,
             title: newTitle.trim(),
             description: newDescription.trim(),
+            category: newCategory || "未分類",
             dueDate: newDueDate || null,
             endDate: newEndDate || null,
             color: newColor,
@@ -769,6 +1107,7 @@
           setNewType(todo.type || "todo");
           setNewTitle(todo.title);
           setNewDescription(todo.description || "");
+          setNewCategory(todo.category || "未分類");
           setNewDueDate(todo.dueDate || "");
           setNewEndDate(todo.endDate || "");
           setNewColor(todo.color || "blue");
@@ -778,13 +1117,31 @@
           setCurrentView("edit");
         };
 
+        const deleteTodoFromSpreadsheet = async (id) => {
+          if (!gasUrl) return false;
+          try {
+            await fetch(gasUrl, {
+              method: "POST",
+              mode: "no-cors",
+              cache: "no-store",
+              headers: { "Content-Type": "text/plain;charset=UTF-8" },
+              body: JSON.stringify({ action: "deleteTodo", id }),
+            });
+            return true;
+          } catch (error) {
+            console.error("削除同期エラー:", error);
+            setSyncError(true);
+            return false;
+          }
+        };
+
         const deleteTodo = async (id) => {
           if (window.confirm("完全に削除してもよろしいですか？")) {
             const updatedTodos = todos.filter((todo) => todo.id !== id);
             lastLocalMutationRef.current = Date.now();
             const storedTodos = writeLocalTodos(updatedTodos) || updatedTodos;
             setTodos(storedTodos);
-            await exportToSpreadsheet(storedTodos);
+            await deleteTodoFromSpreadsheet(id);
           }
         };
 
@@ -808,27 +1165,32 @@
           await exportToSpreadsheet(storedTodos);
         };
 
-        const getGoogleCalendarUrl = (todo) => {
-          const prefix = todo.type === "memo" ? "📝メモ" : "TODO";
-          const text = encodeURIComponent(
-            `【${todo.priority || "中"}】${prefix}: ${todo.title}`,
-          );
-          const details = encodeURIComponent(todo.description || "");
-          let dates = "";
-          if (todo.dueDate) {
-            const startDate = new Date(todo.dueDate);
-            if (!isNaN(startDate.getTime())) {
-              let endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-              if (todo.endDate) {
-                const parsedEnd = new Date(todo.endDate);
-                if (!isNaN(parsedEnd.getTime())) endDate = parsedEnd;
-              }
-              const format = (date) =>
-                date.toISOString().replace(/-|:|\.\d\d\d/g, "");
-              dates = `&dates=${format(startDate)}/${format(endDate)}`;
-            }
+        const openTodoInCalendar = (todo) => {
+          if (!todo.dueDate) return;
+          const key = formatLocalDateKey(todo.dueDate);
+          if (!key) return;
+          const date = new Date(`${key}T00:00:00`);
+          setSelectedDateKey(key);
+          setCalendarCursor(new Date(date.getFullYear(), date.getMonth(), 1));
+          setCurrentView("calendar");
+        };
+
+        const addFromCalendar = (dateKey) => {
+          resetForm();
+          setNewDueDate(`${dateKey}T09:00`);
+          setSelectedDateKey(dateKey);
+          setCurrentView("input");
+        };
+
+        const todoOccursOnDate = (todo, dateKey) => {
+          if (!todo.dueDate) return false;
+          const startKey = formatLocalDateKey(todo.dueDate);
+          if (!startKey) return false;
+          const endKey = todo.endDate ? formatLocalDateKey(todo.endDate) : "";
+          if (endKey && endKey >= startKey) {
+            return dateKey >= startKey && dateKey <= endKey;
           }
-          return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&details=${details}${dates}`;
+          return startKey === dateKey;
         };
 
         // フィルターの条件：「未完了」と「チェック済」は表示。「完了」のみ履歴へ。
@@ -868,6 +1230,48 @@
             (isNaN(timeA) ? Infinity : timeA) -
             (isNaN(timeB) ? Infinity : timeB)
           );
+        };
+
+        const calendarCells = (() => {
+          const year = calendarCursor.getFullYear();
+          const month = calendarCursor.getMonth();
+          const first = new Date(year, month, 1);
+          const gridStart = new Date(year, month, 1 - first.getDay());
+          return Array.from({ length: 42 }, (_, index) => {
+            const date = new Date(
+              gridStart.getFullYear(),
+              gridStart.getMonth(),
+              gridStart.getDate() + index,
+            );
+            const key = formatLocalDateKey(date);
+            return {
+              date,
+              key,
+              inMonth: date.getMonth() === month,
+              holidayName: getJapaneseHolidayName(date),
+              items: todos.filter((todo) => todoOccursOnDate(todo, key)),
+            };
+          });
+        })();
+
+        const selectedCalendarItems = todos
+          .filter((todo) => todoOccursOnDate(todo, selectedDateKey))
+          .sort(sortFunction);
+
+        const moveCalendarMonth = (offset) => {
+          setCalendarCursor(
+            new Date(
+              calendarCursor.getFullYear(),
+              calendarCursor.getMonth() + offset,
+              1,
+            ),
+          );
+        };
+
+        const goCalendarToday = () => {
+          const now = new Date();
+          setCalendarCursor(new Date(now.getFullYear(), now.getMonth(), 1));
+          setSelectedDateKey(formatLocalDateKey(now));
         };
 
         const getAlertBadge = (dueDate) => {
@@ -1012,6 +1416,10 @@
                   )}
 
                   <div className="flex flex-wrap items-center gap-2 mt-3">
+                    <span className="text-[10px] px-2.5 py-1 rounded-md font-black border border-slate-200 bg-slate-50 text-slate-600">
+                      <i className="fa-solid fa-tag mr-1"></i>
+                      {todo.category || "未分類"}
+                    </span>
                     <span
                       className={`text-[10px] px-2.5 py-1 rounded-md font-black border ${priorityColors[todo.priority || "中"]}`}
                     >
@@ -1066,14 +1474,13 @@
 
               {!isCrossedOut && todo.dueDate && (
                 <div className="mt-4 pt-3 border-t border-gray-100 flex gap-2">
-                  <a
-                    href={getGoogleCalendarUrl(todo)}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => openTodoInCalendar(todo)}
                     className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-bold rounded-xl border border-blue-200 text-xs transition-all active:scale-95"
                   >
-                    <i className="fa-brands fa-google"></i> カレンダー追加
-                  </a>
+                    <i className="fa-solid fa-calendar-days"></i> カレンダーで見る
+                  </button>
                   <div className="flex-1 flex items-center justify-center gap-1 text-slate-400 border border-gray-200 rounded-xl bg-gray-50 text-[11px] font-bold">
                     <i className="fa-solid fa-cloud-arrow-up text-green-400"></i>{" "}
                     自動同期済
@@ -1133,6 +1540,46 @@
                 rows="3"
                 className="w-full px-4 py-3 bg-white border-2 border-gray-400 rounded-xl focus:border-gray-700 focus:outline-none font-bold text-sm text-gray-900 placeholder-gray-500 resize-none transition-all shadow-sm"
               />
+            </div>
+
+            <div className="bg-emerald-50 border-2 border-emerald-200 p-4 rounded-2xl">
+              <label className="text-xs font-black text-emerald-900 mb-2 block">
+                <i className="fa-solid fa-tags mr-2"></i>カテゴリ
+              </label>
+              <select
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+                className="w-full px-4 py-3 bg-white border-2 border-emerald-300 rounded-xl focus:border-emerald-600 focus:outline-none font-black text-gray-900 shadow-sm"
+              >
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+              <div className="flex gap-2 mt-3">
+                <input
+                  type="text"
+                  value={categoryDraft}
+                  onChange={(e) => setCategoryDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCategory();
+                    }
+                  }}
+                  placeholder="新しいカテゴリ名"
+                  className="min-w-0 flex-1 px-3 py-2.5 bg-white border-2 border-emerald-200 rounded-xl focus:border-emerald-500 focus:outline-none font-bold text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={addCategory}
+                  disabled={!categoryDraft.trim()}
+                  className="px-4 py-2.5 bg-emerald-600 text-white rounded-xl font-black text-sm disabled:opacity-40 active:scale-95"
+                >
+                  ＋追加
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-col gap-4 bg-white border-2 border-gray-200 p-4 rounded-2xl shadow-sm">
@@ -1310,7 +1757,7 @@
                     TODO管理
                   </h1>
                   <span className="text-[9px] font-black text-slate-400 tracking-widest">
-                    v2.4・端末間同期修正
+                    v2.5.4・日本の祝日カレンダー対応
                   </span>
 
                   {gasUrl && (
@@ -1414,6 +1861,153 @@
                     ) : (
                       <div className="text-center py-24 text-gray-400 font-bold bg-white rounded-[2.5rem] border-2 border-gray-100 shadow-sm">
                         進行中のタスクはありません 🎉
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {currentView === "calendar" && (
+                <div className="animate-in fade-in slide-in-from-right-8">
+                  <div className="bg-white border-2 border-slate-200 rounded-[2rem] shadow-sm overflow-hidden mb-5">
+                    <div className="px-4 pt-4 pb-3 bg-slate-50 border-b-2 border-slate-100">
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => moveCalendarMonth(-1)}
+                          className="w-10 h-10 rounded-xl bg-white border-2 border-slate-200 text-slate-600 active:scale-90"
+                          aria-label="前の月"
+                        >
+                          <i className="fa-solid fa-chevron-left"></i>
+                        </button>
+                        <div className="text-center">
+                          <p className="text-[10px] font-black text-slate-400 tracking-widest">TODO CALENDAR</p>
+                          <h2 className="text-xl font-black text-slate-800">
+                            {calendarCursor.getFullYear()}年 {calendarCursor.getMonth() + 1}月
+                          </h2>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => moveCalendarMonth(1)}
+                          className="w-10 h-10 rounded-xl bg-white border-2 border-slate-200 text-slate-600 active:scale-90"
+                          aria-label="次の月"
+                        >
+                          <i className="fa-solid fa-chevron-right"></i>
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={goCalendarToday}
+                        className="mt-3 w-full py-2 rounded-xl bg-white border border-slate-200 text-xs font-black text-slate-600"
+                      >
+                        今日へ戻る
+                      </button>
+                      <div className="mt-2 flex items-center justify-center gap-3 text-[9px] font-black">
+                        <span className="text-red-600">● 日曜・祝日</span>
+                        <span className="text-blue-600">● 土曜</span>
+                        <span className="text-slate-500">祝日名も表示</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-7 border-b border-slate-100 bg-white">
+                      {["日", "月", "火", "水", "木", "金", "土"].map((weekday, index) => (
+                        <div
+                          key={weekday}
+                          className={`py-2 text-center text-[10px] font-black ${index === 0 ? "text-red-500" : index === 6 ? "text-blue-500" : "text-slate-500"}`}
+                        >
+                          {weekday}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-7 bg-slate-100 gap-px">
+                      {calendarCells.map((cell) => {
+                        const isSelected = cell.key === selectedDateKey;
+                        const isToday = cell.key === formatLocalDateKey(new Date());
+                        const weekday = cell.date.getDay();
+                        const isHoliday = Boolean(cell.holidayName);
+                        const dayTone = isHoliday || weekday === 0
+                          ? "text-red-600"
+                          : weekday === 6
+                            ? "text-blue-600"
+                            : "text-slate-700";
+                        const cellBackground = isHoliday
+                          ? "bg-red-50"
+                          : weekday === 0
+                            ? "bg-rose-50/50"
+                            : weekday === 6
+                              ? "bg-blue-50/40"
+                              : "bg-white";
+                        return (
+                          <button
+                            key={cell.key}
+                            type="button"
+                            onClick={() => setSelectedDateKey(cell.key)}
+                            className={`min-h-[88px] p-1.5 text-left relative ${cellBackground} ${!cell.inMonth ? "opacity-35" : ""} ${isSelected ? "ring-2 ring-inset ring-emerald-500 z-10" : ""}`}
+                          >
+                            <div className="flex items-start justify-between gap-1">
+                              <span
+                                className={`inline-flex w-6 h-6 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-black ${isToday ? "bg-slate-800 text-white" : dayTone}`}
+                              >
+                                {cell.date.getDate()}
+                              </span>
+                            </div>
+                            {cell.holidayName && (
+                              <div
+                                className="mt-0.5 truncate text-[7px] leading-tight font-black text-red-600"
+                                title={cell.holidayName}
+                              >
+                                {cell.holidayName}
+                              </div>
+                            )}
+                            <div className="mt-1 space-y-0.5">
+                              {cell.items.slice(0, 2).map((item) => (
+                                <div
+                                  key={item.id}
+                                  className={`truncate rounded px-1 py-0.5 text-[8px] font-bold ${item.status === "完了" ? "bg-gray-100 text-gray-400 line-through" : item.type === "memo" ? "bg-orange-50 text-orange-700" : "bg-emerald-50 text-emerald-700"}`}
+                                >
+                                  {item.type === "memo" ? "📝" : "✓"} {item.title}
+                                </div>
+                              ))}
+                              {cell.items.length > 2 && (
+                                <div className="text-[8px] font-black text-slate-400 pl-1">
+                                  ＋{cell.items.length - 2}件
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 mb-4 px-1">
+                    <div>
+                      <p className="text-[10px] font-black text-slate-400">選択した日</p>
+                      <h3 className="text-lg font-black text-slate-800">{dateKeyToLabel(selectedDateKey)}</h3>
+                      {getJapaneseHolidayName(new Date(`${selectedDateKey}T00:00:00`)) && (
+                        <p className="mt-0.5 text-xs font-black text-red-600">
+                          祝日：{getJapaneseHolidayName(new Date(`${selectedDateKey}T00:00:00`))}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => addFromCalendar(selectedDateKey)}
+                      className="flex-shrink-0 px-4 py-2.5 rounded-xl bg-slate-800 text-white text-xs font-black shadow-md active:scale-95"
+                    >
+                      <i className="fa-solid fa-plus mr-1"></i>この日に追加
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {selectedCalendarItems.length > 0 ? (
+                      selectedCalendarItems.map((todo) => (
+                        <TodoItem key={todo.id} todo={todo} />
+                      ))
+                    ) : (
+                      <div className="text-center py-12 text-gray-400 font-bold bg-white rounded-[2rem] border-2 border-gray-100 shadow-sm">
+                        この日のTODO・メモはありません
                       </div>
                     )}
                   </div>
@@ -1532,7 +2126,7 @@
                       resetForm();
                       setCurrentView("input");
                     }}
-                    className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === "input" ? "text-slate-800" : "text-gray-400 hover:text-gray-600"}`}
+                    className={`flex flex-col items-center gap-1 p-2 w-14 sm:w-16 transition-colors ${currentView === "input" ? "text-slate-800" : "text-gray-400 hover:text-gray-600"}`}
                   >
                     <i className="fa-solid fa-plus text-xl"></i>
                     <span className="text-[10px] font-bold">追加</span>
@@ -1542,7 +2136,7 @@
                       resetForm();
                       setCurrentView("list");
                     }}
-                    className={`relative flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === "list" || currentView === "edit" ? "text-[#98C4A6]" : "text-gray-400 hover:text-gray-600"}`}
+                    className={`relative flex flex-col items-center gap-1 p-2 w-14 sm:w-16 transition-colors ${currentView === "list" || currentView === "edit" ? "text-[#98C4A6]" : "text-gray-400 hover:text-gray-600"}`}
                   >
                     {expiredTodos.length > 0 && (
                       <span className="absolute top-1 right-2 w-2.5 h-2.5 bg-red-500 rounded-full"></span>
@@ -1553,9 +2147,19 @@
                   <button
                     onClick={() => {
                       resetForm();
+                      setCurrentView("calendar");
+                    }}
+                    className={`flex flex-col items-center gap-1 p-2 w-14 sm:w-16 transition-colors ${currentView === "calendar" ? "text-emerald-600" : "text-gray-400 hover:text-gray-600"}`}
+                  >
+                    <i className="fa-solid fa-calendar-days text-xl"></i>
+                    <span className="text-[10px] font-bold">カレンダー</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      resetForm();
                       setCurrentView("memo");
                     }}
-                    className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === "memo" ? "text-orange-400" : "text-gray-400 hover:text-gray-600"}`}
+                    className={`flex flex-col items-center gap-1 p-2 w-14 sm:w-16 transition-colors ${currentView === "memo" ? "text-orange-400" : "text-gray-400 hover:text-gray-600"}`}
                   >
                     <i className="fa-solid fa-note-sticky text-xl"></i>
                     <span className="text-[10px] font-bold">メモ</span>
@@ -1565,7 +2169,7 @@
                       resetForm();
                       setCurrentView("history");
                     }}
-                    className={`flex flex-col items-center gap-1 p-2 w-16 transition-colors ${currentView === "history" ? "text-slate-800" : "text-gray-400 hover:text-gray-600"}`}
+                    className={`flex flex-col items-center gap-1 p-2 w-14 sm:w-16 transition-colors ${currentView === "history" ? "text-slate-800" : "text-gray-400 hover:text-gray-600"}`}
                   >
                     <i className="fa-solid fa-box-archive text-xl"></i>
                     <span className="text-[10px] font-bold">履歴</span>
