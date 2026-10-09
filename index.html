@@ -136,13 +136,19 @@
         "観光",
         "遊び",
         "外食",
+        "病院",
       ];
       const CATEGORY_STORAGE_KEY = "todo_categories_v25";
 
       const normalizeCategories = (values) => {
         const merged = [...DEFAULT_CATEGORIES, ...(Array.isArray(values) ? values : [])]
-          .map((value) => String(value || "").trim())
-          .filter(Boolean);
+          .map((value) => {
+            if (value && typeof value === "object") {
+              return String(value.category || value.name || value.value || "").trim();
+            }
+            return String(value || "").trim();
+          })
+          .filter((value) => value && value !== "[object Object]");
         return [...new Set(merged)];
       };
 
@@ -1848,7 +1854,7 @@
                     TODO管理
                   </h1>
                   <span className="text-[9px] font-black text-slate-400 tracking-widest">
-                    v2.5.5・見やすい祝日カレンダー操作版
+                    v2.5.6・病院カテゴリ追加版
                   </span>
 
                   {gasUrl && (
