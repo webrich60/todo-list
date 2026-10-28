@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TODO管理 - 見やすい祝日カレンダー操作版</title>
+    <title>TODO管理 - スマホ通知対応版</title>
+    <meta name="theme-color" content="#f7f5f0" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
     <script src="https://cdn.tailwindcss.com"></script>
     <link
       rel="stylesheet"
@@ -22,6 +25,9 @@
       src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"
       crossorigin
     ></script>
+    <script src="https://www.gstatic.com/firebasejs/13.0.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/13.0.0/firebase-messaging-compat.js"></script>
+    <script src="./firebase-config.js"></script>
 
     <style>
       @keyframes fadeIn {
@@ -411,6 +417,7 @@
             ? item.priority
             : "中",
           mailNotify: item.mailNotify === true || item.mailNotify === "TRUE",
+          pushNotify: !(item.pushNotify === false || item.pushNotify === "FALSE"),
           status: normalizedStatus,
           completedAt: item.completedAt || null,
           updatedAt: item.updatedAt || item.modifiedAt || "",
@@ -679,6 +686,19 @@
         const [newColor, setNewColor] = useState("blue");
         const [newPriority, setNewPriority] = useState("中");
         const [newMailNotify, setNewMailNotify] = useState(false);
+        const [newPushNotify, setNewPushNotify] = useState(true);
+        const [pushPermission, setPushPermission] = useState(() =>
+          typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+        );
+        const [pushToken, setPushToken] = useState(() =>
+          localStorage.getItem("todo_fcm_token") || "",
+        );
+        const [pushServerStatus, setPushServerStatus] = useState({
+          configured: false,
+          deviceCount: 0,
+          checked: false,
+        });
+        const [pushBusy, setPushBusy] = useState(false);
         const [newCategory, setNewCategory] = useState("未分類");
         const [categories, setCategories] = useState(readLocalCategories);
         const [categoryDraft, setCategoryDraft] = useState("");
@@ -770,6 +790,51 @@
           const timer = setInterval(() => setCurrentTime(new Date()), 60000);
           return () => clearInterval(timer);
         }, []);
+
+        useEffect(() => {
+          const params = new URLSearchParams(window.location.search);
+          const requestedView = params.get("view");
+          const requestedDate = params.get("date");
+          if (requestedView === "calendar") {
+            setCurrentView("calendar");
+            if (/^\d{4}-\d{2}-\d{2}$/.test(String(requestedDate || ""))) {
+              setSelectedDateKey(requestedDate);
+              const date = new Date(`${requestedDate}T00:00:00`);
+              setCalendarCursor(new Date(date.getFullYear(), date.getMonth(), 1));
+            }
+          }
+        }, []);
+
+        useEffect(() => {
+          if (!gasUrl) return;
+          loadPushServerStatus();
+        }, [gasUrl]);
+
+        useEffect(() => {
+          let unsubscribe = null;
+          const listenForegroundPush = async () => {
+            if (!pushToken || !firebaseConfigReady() || !window.firebase) return;
+            try {
+              const { registration, messaging } = await ensureFirebaseMessaging();
+              unsubscribe = messaging.onMessage((payload) => {
+                const title = payload?.notification?.title || payload?.data?.title || "TODO管理";
+                const body = payload?.notification?.body || payload?.data?.body || "予定・メモを確認してください。";
+                registration.showNotification(title, {
+                  body,
+                  icon: "./icon-192.png",
+                  badge: "./icon-192.png",
+                  tag: payload?.data?.tag || "todo-reminder",
+                });
+              });
+            } catch (error) {
+              console.warn("通知受信準備:", error);
+            }
+          };
+          listenForegroundPush();
+          return () => {
+            if (typeof unsubscribe === "function") unsubscribe();
+          };
+        }, [pushToken]);
 
         // 旧版で保存された大きな写真も、初回起動時に順番に軽量化する。
         useEffect(() => {
@@ -955,6 +1020,156 @@
           setCurrentView("list");
         };
 
+        const firebaseConfigReady = () => {
+          const config = window.TODO_FIREBASE_CONFIG || {};
+          const vapidKey = String(window.TODO_FIREBASE_VAPID_KEY || "").trim();
+          return Boolean(
+            config.apiKey &&
+              config.projectId &&
+              config.messagingSenderId &&
+              config.appId &&
+              vapidKey &&
+              !String(config.apiKey).includes("YOUR_") &&
+              !vapidKey.includes("YOUR_"),
+          );
+        };
+
+        const postGasAction = async (payload) => {
+          if (!gasUrl) throw new Error("先にGAS Web App URLを設定してください。");
+          await fetch(gasUrl, {
+            method: "POST",
+            mode: "no-cors",
+            cache: "no-store",
+            headers: { "Content-Type": "text/plain;charset=UTF-8" },
+            body: JSON.stringify(payload),
+          });
+        };
+
+        const ensureFirebaseMessaging = async () => {
+          if (!("serviceWorker" in navigator) || typeof Notification === "undefined") {
+            throw new Error("このブラウザはスマホ通知に対応していません。");
+          }
+          if (!window.firebase || !firebaseConfigReady()) {
+            throw new Error("Firebase通知設定が未設定です。firebase-config.jsを設定してください。");
+          }
+          const registration = await navigator.serviceWorker.register(
+            "./firebase-messaging-sw.js",
+            { scope: "./" },
+          );
+          await navigator.serviceWorker.ready;
+          const config = window.TODO_FIREBASE_CONFIG;
+          if (!firebase.apps || firebase.apps.length === 0) {
+            firebase.initializeApp(config);
+          }
+          return {
+            registration,
+            messaging: firebase.messaging(),
+          };
+        };
+
+        const registerPushDevice = async () => {
+          setPushBusy(true);
+          try {
+            if (!gasUrl) throw new Error("先にGAS Web App URLを保存してください。");
+            if (typeof Notification === "undefined" || !("serviceWorker" in navigator)) {
+              throw new Error("このブラウザはスマホ通知に対応していません。");
+            }
+            if (!firebaseConfigReady()) {
+              throw new Error("先に firebase-config.js のFirebase設定とVAPID公開鍵を設定してください。");
+            }
+            const permission = await Notification.requestPermission();
+            setPushPermission(permission);
+            if (permission !== "granted") {
+              throw new Error("通知が許可されていません。ブラウザの通知設定を許可してください。");
+            }
+            const { registration, messaging } = await ensureFirebaseMessaging();
+            const token = await messaging.getToken({
+              vapidKey: window.TODO_FIREBASE_VAPID_KEY,
+              serviceWorkerRegistration: registration,
+            });
+            if (!token) throw new Error("通知端末トークンを取得できませんでした。");
+            localStorage.setItem("todo_fcm_token", token);
+            setPushToken(token);
+            await postGasAction({
+              action: "registerPushToken",
+              token,
+              userAgent: navigator.userAgent,
+            });
+            alert("このスマホを通知端末として登録しました。\n前日19:00・当日8:00にTODOとメモを通知します。");
+            setTimeout(loadPushServerStatus, 700);
+          } catch (error) {
+            console.error("通知登録エラー:", error);
+            alert(error.message || "通知登録に失敗しました。");
+          } finally {
+            setPushBusy(false);
+          }
+        };
+
+        const unregisterPushDevice = async () => {
+          if (!pushToken) return;
+          setPushBusy(true);
+          try {
+            try {
+              const { messaging } = await ensureFirebaseMessaging();
+              await messaging.deleteToken();
+            } catch (_) {}
+            await postGasAction({ action: "unregisterPushToken", token: pushToken });
+            localStorage.removeItem("todo_fcm_token");
+            setPushToken("");
+            alert("このスマホの通知登録を解除しました。");
+            setTimeout(loadPushServerStatus, 700);
+          } catch (error) {
+            console.error("通知解除エラー:", error);
+            alert(error.message || "通知登録の解除に失敗しました。");
+          } finally {
+            setPushBusy(false);
+          }
+        };
+
+        const testPushNotification = async () => {
+          if (!pushToken) {
+            alert("先に『このスマホで通知を受け取る』を押してください。");
+            return;
+          }
+          setPushBusy(true);
+          try {
+            await postGasAction({ action: "testPushToken", token: pushToken });
+            alert("テスト通知を送信しました。数秒後にスマホ通知を確認してください。");
+          } catch (error) {
+            console.error("テスト通知エラー:", error);
+            alert(error.message || "テスト通知を送信できませんでした。");
+          } finally {
+            setPushBusy(false);
+          }
+        };
+
+        const loadPushServerStatus = () => {
+          if (!gasUrl) return;
+          const callbackName = "gasPushStatus_" + Date.now();
+          const cleanup = () => {
+            delete window[callbackName];
+            const scriptEl = document.getElementById(callbackName);
+            if (scriptEl) scriptEl.remove();
+          };
+          window[callbackName] = (data) => {
+            if (data && typeof data === "object") {
+              setPushServerStatus({
+                configured: Boolean(data.configured),
+                deviceCount: Number(data.deviceCount || 0),
+                checked: true,
+              });
+            }
+            cleanup();
+          };
+          const script = document.createElement("script");
+          script.id = callbackName;
+          const separator = gasUrl.includes("?") ? "&" : "?";
+          script.src = `${gasUrl}${separator}action=notificationStatus&callback=${callbackName}&_=${Date.now()}`;
+          script.onerror = cleanup;
+          document.body.appendChild(script);
+          setTimeout(cleanup, 8000);
+        };
+
         const handleImageChange = async (e) => {
           const file = e.target.files[0];
           if (!file) return;
@@ -987,6 +1202,7 @@
           setNewColor("blue");
           setNewPriority("中");
           setNewMailNotify(false);
+          setNewPushNotify(true);
           setNewCategory("未分類");
           setCategoryDraft("");
           setEditingTodo(null);
@@ -1012,6 +1228,7 @@
               color: t.color || "blue",
               status: t.status || "未完了",
               mailNotify: t.mailNotify || false,
+              pushNotify: t.pushNotify !== false,
               completedAt: t.completedAt || "",
               updatedAt: t.updatedAt || "",
             }));
@@ -1061,6 +1278,7 @@
             color: newColor,
             priority: newPriority,
             mailNotify: newMailNotify,
+            pushNotify: newPushNotify,
             status: "未完了",
             imageUrl: newImage,
             updatedAt: new Date().toISOString(),
@@ -1098,6 +1316,7 @@
             color: newColor,
             priority: newPriority,
             mailNotify: newMailNotify,
+            pushNotify: newPushNotify,
             imageUrl: newImage,
             updatedAt: new Date().toISOString(),
           };
@@ -1148,6 +1367,7 @@
           setNewColor(todo.color || "blue");
           setNewPriority(todo.priority || "中");
           setNewMailNotify(todo.mailNotify || false);
+          setNewPushNotify(todo.pushNotify !== false);
           setNewImage(todo.imageUrl || null);
           setCurrentView("edit");
         };
@@ -1790,6 +2010,28 @@
               </label>
             </div>
 
+            <div className="bg-amber-50 border-2 border-amber-300 p-4 rounded-2xl flex items-center justify-between">
+              <div className="pr-3">
+                <p className="text-sm font-black text-amber-900 flex items-center gap-2">
+                  <i className="fa-solid fa-bell"></i> スマホ通知
+                </p>
+                <p className="text-[10px] text-amber-800 mt-1 leading-relaxed font-bold">
+                  TODO・メモとも前日19:00／当日8:00に通知
+                  <br />
+                  ※日付未設定・完了済みは通知しません
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  checked={newPushNotify}
+                  onChange={(e) => setNewPushNotify(e.target.checked)}
+                />
+                <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+
             <div className="flex items-center gap-4 py-2">
               <label className="cursor-pointer flex items-center justify-center px-5 py-2.5 bg-gray-100 text-gray-700 border-2 border-gray-200 rounded-xl font-black text-xs hover:bg-gray-200 transition-all">
                 <i className="fa-solid fa-camera mr-2"></i> 写真を追加
@@ -1854,7 +2096,7 @@
                     TODO管理
                   </h1>
                   <span className="text-[9px] font-black text-slate-400 tracking-widest">
-                    v2.5.6・病院カテゴリ追加版
+                    v2.6.0・スマホ通知対応版
                   </span>
 
                   {gasUrl && (
@@ -2221,6 +2463,72 @@
                       >
                         設定を保存
                       </button>
+
+                      <div className="mt-8 pt-6 border-t-2 border-gray-200">
+                        <h3 className="text-base font-black text-slate-800 mb-2 flex items-center gap-2">
+                          <i className="fa-solid fa-bell text-amber-500"></i>{" "}
+                          スマホ通知
+                        </h3>
+                        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 mb-4">
+                          <p className="text-xs font-black text-amber-950 leading-relaxed">
+                            前日 19:00：明日の予定・メモがあります
+                            <br />
+                            当日 8:00：今日の予定・メモ、お忘れではないですか？
+                          </p>
+                          <p className="text-[10px] text-amber-800 mt-2 font-bold leading-relaxed">
+                            TODOとメモの両方が対象です。完了済み・スマホ通知OFF・日付未設定の項目は通知しません。
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[10px] font-black mb-4">
+                          <div className={`rounded-xl border-2 p-3 ${firebaseConfigReady() ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-red-300 bg-red-50 text-red-900"}`}>
+                            Firebase<br />{firebaseConfigReady() ? "設定済み" : "未設定"}
+                          </div>
+                          <div className={`rounded-xl border-2 p-3 ${pushServerStatus.configured ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-red-300 bg-red-50 text-red-900"}`}>
+                            GAS送信側<br />{pushServerStatus.configured ? "設定済み" : "未設定"}
+                          </div>
+                          <div className={`rounded-xl border-2 p-3 ${pushPermission === "granted" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-300 bg-slate-50 text-slate-800"}`}>
+                            通知許可<br />{pushPermission === "granted" ? "許可済み" : pushPermission === "denied" ? "拒否" : "未許可"}
+                          </div>
+                          <div className={`rounded-xl border-2 p-3 ${pushToken ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-300 bg-slate-50 text-slate-800"}`}>
+                            この端末<br />{pushToken ? "登録済み" : "未登録"}
+                          </div>
+                        </div>
+                        {!pushToken ? (
+                          <button
+                            type="button"
+                            onClick={registerPushDevice}
+                            disabled={pushBusy}
+                            className="w-full py-4 bg-amber-500 text-white font-black rounded-2xl shadow-sm disabled:opacity-40 active:scale-95"
+                          >
+                            <i className="fa-solid fa-mobile-screen-button mr-2"></i>
+                            {pushBusy ? "登録中…" : "このスマホで通知を受け取る"}
+                          </button>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={testPushNotification}
+                              disabled={pushBusy || !pushServerStatus.configured}
+                              className="py-3.5 bg-emerald-600 text-white font-black rounded-2xl disabled:opacity-40 active:scale-95"
+                            >
+                              <i className="fa-solid fa-paper-plane mr-1"></i>テスト通知
+                            </button>
+                            <button
+                              type="button"
+                              onClick={unregisterPushDevice}
+                              disabled={pushBusy}
+                              className="py-3.5 bg-white border-2 border-slate-400 text-slate-700 font-black rounded-2xl disabled:opacity-40 active:scale-95"
+                            >
+                              通知解除
+                            </button>
+                          </div>
+                        )}
+                        {pushServerStatus.checked && (
+                          <p className="text-[10px] text-slate-600 mt-3 font-bold">
+                            登録端末：{pushServerStatus.deviceCount}台
+                          </p>
+                        )}
+                      </div>
 
                       <div className="mt-8 pt-6 border-t-2 border-gray-100">
                         <h3 className="text-sm font-black text-slate-700 mb-2 flex items-center gap-2">

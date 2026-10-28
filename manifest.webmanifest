@@ -1,0 +1,22 @@
+{
+  "name": "TODO管理",
+  "short_name": "TODO管理",
+  "description": "TODO・メモ・日本の祝日カレンダー・スマホ通知",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f5f0",
+  "theme_color": "#f7f5f0",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
