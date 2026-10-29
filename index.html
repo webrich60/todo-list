@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TODO管理 - スマホ通知対応版</title>
+    <title>TODO管理 - スマホ通知安定化版</title>
     <meta name="theme-color" content="#f7f5f0" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
@@ -550,6 +550,52 @@
         }
       };
 
+      // 通知トークンなど小さな設定もlocalStorageではなくIndexedDBへ保存する。
+      // 旧版の大きな写真/TODOでlocalStorage上限に達していても通知登録できるようにする。
+      const readIndexedSetting = async (key) => {
+        const database = await openTodoDatabase();
+        try {
+          return await new Promise((resolve, reject) => {
+            const transaction = database.transaction(TODO_DB_STORE, "readonly");
+            const request = transaction.objectStore(TODO_DB_STORE).get(key);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result ?? "");
+          });
+        } finally {
+          database.close();
+        }
+      };
+
+      const saveIndexedSetting = async (key, value) => {
+        const database = await openTodoDatabase();
+        try {
+          await new Promise((resolve, reject) => {
+            const transaction = database.transaction(TODO_DB_STORE, "readwrite");
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
+            transaction.oncomplete = () => resolve();
+            transaction.objectStore(TODO_DB_STORE).put(value, key);
+          });
+        } finally {
+          database.close();
+        }
+      };
+
+      const deleteIndexedSetting = async (key) => {
+        const database = await openTodoDatabase();
+        try {
+          await new Promise((resolve, reject) => {
+            const transaction = database.transaction(TODO_DB_STORE, "readwrite");
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
+            transaction.oncomplete = () => resolve();
+            transaction.objectStore(TODO_DB_STORE).delete(key);
+          });
+        } finally {
+          database.close();
+        }
+      };
+
       let databaseErrorShown = false;
       const writeLocalTodos = (items) => {
         saveIndexedTodos(items)
@@ -690,13 +736,12 @@
         const [pushPermission, setPushPermission] = useState(() =>
           typeof Notification === "undefined" ? "unsupported" : Notification.permission,
         );
-        const [pushToken, setPushToken] = useState(() =>
-          localStorage.getItem("todo_fcm_token") || "",
-        );
+        const [pushToken, setPushToken] = useState("");
         const [pushServerStatus, setPushServerStatus] = useState({
           configured: false,
           deviceCount: 0,
           checked: false,
+          detail: "",
         });
         const [pushBusy, setPushBusy] = useState(false);
         const [newCategory, setNewCategory] = useState("未分類");
@@ -1067,6 +1112,33 @@
           };
         };
 
+
+        // 旧版のlocalStorageに通知トークンがあればIndexedDBへ移行する。
+        // localStorageが容量上限でも、通知登録自体を止めない。
+        useEffect(() => {
+          let cancelled = false;
+          const loadSavedPushToken = async () => {
+            try {
+              let token = String((await readIndexedSetting("todo_fcm_token")) || "");
+              if (!token) {
+                try {
+                  const legacy = String(localStorage.getItem("todo_fcm_token") || "");
+                  if (legacy) {
+                    token = legacy;
+                    await saveIndexedSetting("todo_fcm_token", legacy);
+                    try { localStorage.removeItem("todo_fcm_token"); } catch (_) {}
+                  }
+                } catch (_) {}
+              }
+              if (!cancelled && token) setPushToken(token);
+            } catch (error) {
+              console.warn("通知トークン読込エラー:", error);
+            }
+          };
+          loadSavedPushToken();
+          return () => { cancelled = true; };
+        }, []);
+
         const registerPushDevice = async () => {
           setPushBusy(true);
           try {
@@ -1088,13 +1160,19 @@
               serviceWorkerRegistration: registration,
             });
             if (!token) throw new Error("通知端末トークンを取得できませんでした。");
-            localStorage.setItem("todo_fcm_token", token);
-            setPushToken(token);
+            // 先にGASへ登録。端末保存の容量不足でサーバー登録まで止めない。
             await postGasAction({
               action: "registerPushToken",
               token,
               userAgent: navigator.userAgent,
             });
+            setPushToken(token);
+            try {
+              await saveIndexedSetting("todo_fcm_token", token);
+              try { localStorage.removeItem("todo_fcm_token"); } catch (_) {}
+            } catch (storageError) {
+              console.warn("通知トークンの端末保存に失敗しましたが、通知登録は継続します:", storageError);
+            }
             alert("このスマホを通知端末として登録しました。\n前日19:00・当日8:00にTODOとメモを通知します。");
             setTimeout(loadPushServerStatus, 700);
           } catch (error) {
@@ -1114,7 +1192,8 @@
               await messaging.deleteToken();
             } catch (_) {}
             await postGasAction({ action: "unregisterPushToken", token: pushToken });
-            localStorage.removeItem("todo_fcm_token");
+            try { await deleteIndexedSetting("todo_fcm_token"); } catch (_) {}
+            try { localStorage.removeItem("todo_fcm_token"); } catch (_) {}
             setPushToken("");
             alert("このスマホの通知登録を解除しました。");
             setTimeout(loadPushServerStatus, 700);
@@ -1152,11 +1231,19 @@
             if (scriptEl) scriptEl.remove();
           };
           window[callbackName] = (data) => {
-            if (data && typeof data === "object") {
+            if (Array.isArray(data)) {
+              setPushServerStatus({
+                configured: false,
+                deviceCount: 0,
+                checked: true,
+                detail: "GASが旧版です。backend.gsを更新して既存デプロイを新バージョンにしてください。",
+              });
+            } else if (data && typeof data === "object") {
               setPushServerStatus({
                 configured: Boolean(data.configured),
                 deviceCount: Number(data.deviceCount || 0),
                 checked: true,
+                detail: String(data.reason || data.error || ""),
               });
             }
             cleanup();
@@ -2095,8 +2182,11 @@
                     <i className="fa-solid fa-calendar-check text-[#98C4A6]"></i>{" "}
                     TODO管理
                   </h1>
-                  <span className="text-[9px] font-black text-slate-400 tracking-widest">
-                    v2.6.0・スマホ通知対応版
+                  <span
+                    data-release="2.6.4-sync-guard"
+                    className="text-[9px] font-black text-slate-400 tracking-widest"
+                  >
+                    v2.6.4・端末間同期修正版
                   </span>
 
                   {gasUrl && (
@@ -2524,9 +2614,16 @@
                           </div>
                         )}
                         {pushServerStatus.checked && (
-                          <p className="text-[10px] text-slate-600 mt-3 font-bold">
-                            登録端末：{pushServerStatus.deviceCount}台
-                          </p>
+                          <div className="mt-3">
+                            <p className="text-[10px] text-slate-600 font-bold">
+                              登録端末：{pushServerStatus.deviceCount}台
+                            </p>
+                            {!pushServerStatus.configured && pushServerStatus.detail && (
+                              <p className="text-[10px] text-red-700 font-black mt-1 leading-relaxed">
+                                {pushServerStatus.detail}
+                              </p>
+                            )}
+                          </div>
                         )}
                       </div>
 
